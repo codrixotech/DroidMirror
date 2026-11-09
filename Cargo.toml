@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 anyhow = "1.0.104"
 log = "0.4.35"
+thiserror = "2.0.21"
 
 # macOS framework bindings are added in milestone 3, when the display code
 # needs them, under [target.'cfg(target_os = "macos")'.dependencies].

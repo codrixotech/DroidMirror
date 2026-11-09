@@ -22,7 +22,9 @@ fn main() {
     let version = field("version");
     let expected = field("sha256");
 
-    let server = root.join("assets").join(format!("scrcpy-server-v{version}"));
+    let server = root
+        .join("assets")
+        .join(format!("scrcpy-server-v{version}"));
     println!("cargo:rerun-if-changed={}", server.display());
     if !server.is_file() {
         fail(&format!(

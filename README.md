@@ -11,7 +11,9 @@ server (Apache 2.0) on the phone. The client is pinned to **scrcpy-server
 
 Requirements: Apple Silicon Mac, macOS 14 or later.
 
-> Status: milestone 1 (project setup). Mirroring is not implemented yet.
+> Status: milestone 2. DroidMirror connects to the phone, starts the
+> server and logs the video packet rate and bitrate in the terminal. There
+> is no window yet.
 
 ## Mac setup
 
@@ -35,7 +37,10 @@ Requirements: Apple Silicon Mac, macOS 14 or later.
    cargo run --release
    ```
 
-   Set `DROIDMIRROR_LOG=debug` for verbose logs.
+   Options: `--serial SERIAL` picks a device when several are connected,
+   `--forward` uses `adb forward` instead of `adb reverse`. Set
+   `DROIDMIRROR_LOG=debug` for verbose logs, and `ADB=/path/to/adb` if adb
+   is not on your `PATH`.
 
 ## Phone setup (Realme / Realme UI)
 
