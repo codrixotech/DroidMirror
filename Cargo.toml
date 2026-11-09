@@ -1,0 +1,21 @@
+[package]
+name = "droidmirror"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Lightweight native macOS mirroring and control for Android, using scrcpy-server"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = "1.0.104"
+log = "0.4.35"
+
+# macOS framework bindings are added in milestone 3, when the display code
+# needs them, under [target.'cfg(target_os = "macos")'.dependencies].
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
