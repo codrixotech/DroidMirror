@@ -1,50 +1,74 @@
 //! DroidMirror: mirror and control an Android device from macOS, using the
 //! official scrcpy-server running on the device.
 
+// The input mapping and parts of the protocol are only used by the macOS
+// window; on other platforms (headless mode, tests) they'd warn.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
 mod adb;
+mod controller;
+mod h264;
+mod input;
 mod logger;
+#[cfg(target_os = "macos")]
+mod macos;
 mod protocol;
 mod server;
+mod session;
+mod video;
 
-use std::io::Read;
-use std::net::TcpStream;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 
-use crate::protocol::video::{Event, VideoStream};
 use crate::server::SERVER_VERSION;
+use crate::session::{Config, Session, Tcpip, Ui, UiEvent};
 
 const USAGE: &str = "\
-usage: droidmirror [--serial SERIAL] [--forward]
+usage: droidmirror [options]
 
   -s, --serial SERIAL   device to use when several are connected
+      --tcpip[=IP[:PORT]]
+                        connect over Wi-Fi: with an address, `adb connect` to
+                        it; without, switch the USB device to wireless
+                        debugging first (you can then unplug it)
       --forward         use `adb forward` instead of `adb reverse`
+      --headless        no window: log video packet rate and bitrate only
   -V, --version         print version
   -h, --help            print this help
+
+shortcuts: Cmd+B Back, Cmd+H Home, Cmd+S Recent apps, right click Back,
+           Cmd+C copy on the phone, Cmd+V paste the Mac clipboard
 
 environment:
   DROIDMIRROR_LOG       error | warn | info | debug | trace (default: info)
   ADB                   path to the adb binary";
 
-struct Args {
-    serial: Option<String>,
-    force_forward: bool,
+pub struct Args {
+    pub config: Config,
+    pub headless: bool,
 }
 
 fn parse_args() -> Result<Option<Args>> {
-    let mut args = Args {
+    let mut config = Config {
         serial: std::env::var("ANDROID_SERIAL")
             .ok()
             .filter(|s| !s.is_empty()),
         force_forward: false,
+        tcpip: None,
+        stats_level: log::Level::Debug,
     };
+    let mut headless = false;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "-s" | "--serial" => args.serial = Some(it.next().context("--serial needs a value")?),
-            "--forward" => args.force_forward = true,
+            "-s" | "--serial" => config.serial = Some(it.next().context("--serial needs a value")?),
+            "--forward" => config.force_forward = true,
+            "--tcpip" => config.tcpip = Some(Tcpip::Auto),
+            a if a.starts_with("--tcpip=") => {
+                config.tcpip = Some(Tcpip::Addr(a["--tcpip=".len()..].to_owned()));
+            }
+            "--headless" => headless = true,
             "-V" | "--version" => {
                 println!(
                     "droidmirror {} (scrcpy-server {SERVER_VERSION})",
@@ -59,7 +83,10 @@ fn parse_args() -> Result<Option<Args>> {
             other => bail!("unknown argument `{other}` (try --help)"),
         }
     }
-    Ok(Some(args))
+    if headless {
+        config.stats_level = log::Level::Info;
+    }
+    Ok(Some(Args { config, headless }))
 }
 
 fn main() {
@@ -72,122 +99,61 @@ fn main() {
         }
     };
     logger::init();
-    if let Err(e) = run(args) {
+    log::info!(
+        "droidmirror {} using scrcpy-server {SERVER_VERSION}",
+        env!("CARGO_PKG_VERSION")
+    );
+    let result = if args.headless {
+        run_headless(args.config)
+    } else {
+        run_app(args.config)
+    };
+    if let Err(e) = result {
         log::error!("{e:#}");
         std::process::exit(1);
     }
 }
 
-fn run(args: Args) -> Result<()> {
-    log::info!(
-        "droidmirror {} using scrcpy-server {SERVER_VERSION}",
-        env!("CARGO_PKG_VERSION")
-    );
-
-    let adb = adb::Adb::locate()?;
-    let serial = adb::select_device(&adb.devices()?, args.serial.as_deref())?;
-    log::info!("using device {serial}");
-
-    let (_server, conn) = server::start(&adb, &serial, server::Params::new(args.force_forward))?;
-    log::info!("connected to \"{}\"", conn.device_name);
-
-    spawn_control_drain(conn.control)?;
-    let video = thread::Builder::new()
-        .name("video".into())
-        .spawn(move || read_video(conn.video))?;
-
-    match video.join() {
-        Ok(result) => result,
-        Err(_) => bail!("video thread panicked"),
-    }
-    // `_server` drops here, stopping the server process.
+#[cfg(target_os = "macos")]
+fn run_app(config: Config) -> Result<()> {
+    macos::run(adb::Adb::locate()?, config)
 }
 
-/// Milestone 2: read packets as fast as they arrive and log throughput.
-fn read_video(socket: TcpStream) -> Result<()> {
-    let mut stream = VideoStream::new(socket);
-    stream.read_codec()?;
-    log::info!("video codec: h264");
+#[cfg(not(target_os = "macos"))]
+fn run_app(_config: Config) -> Result<()> {
+    bail!("the mirroring window needs macOS; use --headless on this platform")
+}
 
-    let mut stats = Stats::new();
-    while let Some(event) = stream.next_event()? {
+/// Logs what a window would show. Exits when the device disconnects.
+struct LogUi {
+    done: std::sync::Mutex<std::sync::mpsc::Sender<Result<(), String>>>,
+}
+
+impl Ui for LogUi {
+    fn post(&self, event: UiEvent) {
+        let done = |r| {
+            let _ = self.done.lock().unwrap().send(r);
+        };
         match event {
-            Event::Session { width, height } => log::info!("video session: {width}x{height}"),
-            Event::Packet(p) => {
-                if p.config {
-                    log::info!("config packet ({} bytes)", p.data.len());
-                }
-                stats.add(p.data.len(), p.key_frame);
-            }
+            UiEvent::Status(s) => log::info!("status: {s}"),
+            UiEvent::Connected { device_name, .. } => log::info!("mirroring \"{device_name}\""),
+            UiEvent::VideoSize { .. } => {}
+            UiEvent::Disconnected => done(Ok(())),
+            UiEvent::Clipboard(t) => log::info!("device clipboard: {} bytes", t.len()),
+            UiEvent::Fatal(e) => done(Err(e)),
         }
-        stats.report_if_due();
-    }
-    log::info!("video stream ended (device disconnected or server stopped)");
-    Ok(())
-}
-
-struct Stats {
-    since: Instant,
-    packets: u64,
-    bytes: u64,
-    key_frames: u64,
-    total_packets: u64,
-}
-
-impl Stats {
-    const PERIOD: Duration = Duration::from_secs(1);
-
-    fn new() -> Self {
-        Self {
-            since: Instant::now(),
-            packets: 0,
-            bytes: 0,
-            key_frames: 0,
-            total_packets: 0,
-        }
-    }
-
-    fn add(&mut self, len: usize, key_frame: bool) {
-        self.packets += 1;
-        self.total_packets += 1;
-        self.bytes += len as u64;
-        self.key_frames += key_frame as u64;
-    }
-
-    /// Checked on each packet rather than by a timer.
-    fn report_if_due(&mut self) {
-        let elapsed = self.since.elapsed();
-        if elapsed < Self::PERIOD {
-            return;
-        }
-        let secs = elapsed.as_secs_f64();
-        log::info!(
-            "{:5.1} pkt/s  {:6.0} kbit/s  {} key  ({} total)",
-            self.packets as f64 / secs,
-            self.bytes as f64 * 8.0 / 1000.0 / secs,
-            self.key_frames,
-            self.total_packets
-        );
-        self.since = Instant::now();
-        self.packets = 0;
-        self.bytes = 0;
-        self.key_frames = 0;
     }
 }
 
-/// The device sends clipboard and other messages on the control socket.
-/// They must be read even if unused, or the device side blocks.
-fn spawn_control_drain(mut socket: TcpStream) -> Result<()> {
-    thread::Builder::new()
-        .name("control-read".into())
-        .spawn(move || {
-            let mut buf = [0u8; 4096];
-            loop {
-                match socket.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => log::debug!("discarded {n} bytes of device messages"),
-                }
-            }
-        })?;
-    Ok(())
+fn run_headless(config: Config) -> Result<()> {
+    let adb = adb::Adb::locate()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let ui = Arc::new(LogUi {
+        done: std::sync::Mutex::new(tx),
+    });
+    let mut session = Session::start(adb, config, Box::new(video::NullSink), ui)?;
+    let result = rx.recv().unwrap_or(Ok(()));
+    session.stop();
+    session.join();
+    result.map_err(anyhow::Error::msg)
 }

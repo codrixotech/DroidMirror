@@ -10,6 +10,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, ExitStatus};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -94,22 +95,41 @@ fn random_scid() -> u32 {
     (h.finish() as u32) & 0x7fff_ffff
 }
 
+/// The device runs a different scrcpy-server than this client was built
+/// for. Not worth retrying.
+#[derive(Debug, thiserror::Error)]
+#[error("scrcpy-server version mismatch: {0}")]
+pub struct VersionMismatch(pub String);
+
+/// Handle that can kill the server process from another thread
+/// (used on quit while a connection is still being set up).
+#[derive(Clone)]
+pub struct ServerHandle(Arc<Mutex<Child>>);
+
+impl ServerHandle {
+    pub fn kill(&self) {
+        if let Ok(mut child) = self.0.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    fn try_exited(&self) -> Option<ExitStatus> {
+        self.0.lock().ok()?.try_wait().ok().flatten()
+    }
+}
+
 /// The running server process (`adb shell app_process ...`).
 /// Killing it on drop ends the server, which closes its sockets.
 pub struct Server {
-    child: Child,
-}
-
-impl Server {
-    pub fn try_exited(&mut self) -> Option<ExitStatus> {
-        self.child.try_wait().ok().flatten()
-    }
+    handle: ServerHandle,
+    /// Last error line the server printed, for startup diagnostics.
+    last_error: Arc<Mutex<Option<String>>>,
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.handle.kill();
     }
 }
 
@@ -126,7 +146,13 @@ enum Tunnel {
 }
 
 /// Pushes and starts the server, then completes the socket handshake.
-pub fn start(adb: &Adb, serial: &str, mut params: Params) -> Result<(Server, Connection)> {
+/// `on_spawn` receives a kill handle as soon as the process exists.
+pub fn start(
+    adb: &Adb,
+    serial: &str,
+    mut params: Params,
+    on_spawn: &dyn Fn(ServerHandle),
+) -> Result<(Server, Connection)> {
     let jar = write_jar()?;
     adb.push(serial, &jar, DEVICE_SERVER_PATH)
         .context("could not push scrcpy-server to the device")?;
@@ -137,6 +163,7 @@ pub fn start(adb: &Adb, serial: &str, mut params: Params) -> Result<(Server, Con
 
     let result = (|| {
         let mut server = spawn(adb, serial, &params)?;
+        on_spawn(server.handle.clone());
         let conn = match &tunnel {
             Tunnel::Reverse(listener) => accept_sockets(listener, &mut server)?,
             Tunnel::Forward(port) => connect_sockets(*port, &mut server)?,
@@ -209,17 +236,26 @@ fn spawn(adb: &Adb, serial: &str, params: &Params) -> Result<Server> {
     let args = params.shell_args();
     log::debug!("starting server: adb shell {}", args.join(" "));
     let mut child = adb.spawn_shell(serial, &args)?;
+    let last_error = Arc::new(Mutex::new(None));
     if let Some(out) = child.stdout.take() {
-        forward_log(out, "stdout");
+        forward_log(out, "stdout", last_error.clone());
     }
     if let Some(err) = child.stderr.take() {
-        forward_log(err, "stderr");
+        forward_log(err, "stderr", last_error.clone());
     }
-    Ok(Server { child })
+    Ok(Server {
+        handle: ServerHandle(Arc::new(Mutex::new(child))),
+        last_error,
+    })
 }
 
-/// Relays the server's output (`[server] INFO: ...`) into our log.
-fn forward_log(pipe: impl Read + Send + 'static, name: &str) {
+/// Relays the server's output (`[server] INFO: ...`) into our log and
+/// remembers the last error line.
+fn forward_log(
+    pipe: impl Read + Send + 'static,
+    name: &str,
+    last_error: Arc<Mutex<Option<String>>>,
+) {
     let spawned = thread::Builder::new()
         .name(format!("server-{name}"))
         .spawn(move || {
@@ -227,6 +263,9 @@ fn forward_log(pipe: impl Read + Send + 'static, name: &str) {
                 let line = line.strip_prefix("[server] ").unwrap_or(&line);
                 if let Some(msg) = line.strip_prefix("ERROR: ") {
                     log::error!(target: "server", "{msg}");
+                    if let Ok(mut slot) = last_error.lock() {
+                        *slot = Some(msg.to_owned());
+                    }
                 } else if let Some(msg) = line.strip_prefix("WARN: ") {
                     log::warn!(target: "server", "{msg}");
                 } else if let Some(msg) = line.strip_prefix("INFO: ") {
@@ -247,8 +286,14 @@ fn forward_log(pipe: impl Read + Send + 'static, name: &str) {
 }
 
 fn server_died(server: &mut Server) -> Option<anyhow::Error> {
-    server.try_exited().map(|status| {
-        anyhow!("scrcpy-server exited during startup ({status}); see the server log above")
+    let status = server.handle.try_exited()?;
+    // Give the log threads a moment to record the server's last words.
+    thread::sleep(Duration::from_millis(100));
+    let last = server.last_error.lock().ok().and_then(|l| l.clone());
+    Some(match last {
+        Some(msg) if msg.contains("does not match the client") => VersionMismatch(msg).into(),
+        Some(msg) => anyhow!("scrcpy-server failed to start: {msg}"),
+        None => anyhow!("scrcpy-server exited during startup ({status}); see the log above"),
     })
 }
 

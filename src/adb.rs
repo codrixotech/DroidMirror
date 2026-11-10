@@ -181,6 +181,30 @@ impl Adb {
             .map(drop)
     }
 
+    /// Runs a shell command on the device and returns its output.
+    pub fn shell_output(&self, serial: &str, args: &[&str]) -> Result<String> {
+        let mut full = vec!["shell"];
+        full.extend_from_slice(args);
+        self.run(Some(serial), &full)
+    }
+
+    /// Restarts adbd on the device listening on TCP `port`.
+    pub fn tcpip(&self, serial: &str, port: u16) -> Result<()> {
+        self.run(Some(serial), &["tcpip", &port.to_string()])
+            .map(drop)
+    }
+
+    /// `adb connect host:port`. adb exits 0 even on failure, so the
+    /// output is checked.
+    pub fn connect(&self, addr: &str) -> Result<()> {
+        let out = self.run(None, &["connect", addr])?;
+        if out.contains("connected to") {
+            Ok(())
+        } else {
+            bail!("could not connect to {addr}: {}", out.trim())
+        }
+    }
+
     /// Starts `adb shell <args>` with stdout and stderr piped.
     pub fn spawn_shell(&self, serial: &str, args: &[String]) -> Result<Child> {
         self.cmd(Some(serial))
@@ -193,9 +217,66 @@ impl Adb {
     }
 }
 
+/// Default port for `adb tcpip`.
+pub const TCPIP_PORT: u16 = 5555;
+
+/// Adds the default adb port to a host given without one.
+pub fn with_default_port(addr: &str) -> String {
+    let has_port = addr
+        .rsplit_once(':')
+        .is_some_and(|(_, p)| p.parse::<u16>().is_ok());
+    if has_port {
+        addr.to_owned()
+    } else {
+        format!("{addr}:{TCPIP_PORT}")
+    }
+}
+
+/// Finds the device's IPv4 address in `ip -f inet addr show wlan0`
+/// output (`inet 192.168.1.23/24 ...`) or `ip route` output (`... src
+/// 192.168.1.23 ...`).
+pub fn parse_device_ip(output: &str) -> Option<String> {
+    let mut words = output.split_whitespace();
+    while let Some(w) = words.next() {
+        if w == "inet" || w == "src" {
+            let ip = words.next()?.split('/').next()?;
+            if ip
+                .parse::<std::net::Ipv4Addr>()
+                .is_ok_and(|a| !a.is_loopback())
+            {
+                return Some(ip.to_owned());
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_ip_from_ip_addr() {
+        let out = "33: wlan0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP\n    \
+                   inet 192.168.1.23/24 brd 192.168.1.255 scope global wlan0\n       \
+                   valid_lft forever preferred_lft forever\n";
+        assert_eq!(parse_device_ip(out).as_deref(), Some("192.168.1.23"));
+    }
+
+    #[test]
+    fn device_ip_from_ip_route() {
+        let out = "192.168.1.0/24 dev wlan0 proto kernel scope link src 192.168.1.23\n";
+        assert_eq!(parse_device_ip(out).as_deref(), Some("192.168.1.23"));
+        assert_eq!(parse_device_ip("inet 127.0.0.1/8 scope host lo"), None);
+        assert_eq!(parse_device_ip(""), None);
+    }
+
+    #[test]
+    fn default_port() {
+        assert_eq!(with_default_port("192.168.1.23"), "192.168.1.23:5555");
+        assert_eq!(with_default_port("192.168.1.23:4444"), "192.168.1.23:4444");
+        assert_eq!(with_default_port("phone.local"), "phone.local:5555");
+    }
 
     const OUT: &str = "* daemon not running; starting now at tcp:5037\n\
                        * daemon started successfully\n\

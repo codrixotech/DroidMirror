@@ -3,6 +3,8 @@
 //! Sources: `doc/develop.md`, `server/.../device/DesktopConnection.java` and
 //! `server/.../device/Streamer.java` at tag v5.0.1. Everything is big-endian.
 
+pub mod control;
+pub mod device_msg;
 pub mod video;
 
 /// Size of the device name field sent once on the first socket

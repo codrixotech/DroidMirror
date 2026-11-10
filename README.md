@@ -1,19 +1,15 @@
 # DroidMirror
 
 A lightweight native macOS app that mirrors and controls an Android phone,
-in the spirit of iPhone Mirroring. Written in Rust, no webview, no FFmpeg:
-H.264 from the phone goes straight into a hardware-decoded
-`AVSampleBufferDisplayLayer`.
+in the spirit of iPhone Mirroring. Written in Rust, no webview, no FFmpeg,
+no GUI framework: H.264 from the phone goes straight into a
+hardware-decoded `AVSampleBufferDisplayLayer` in a plain `NSWindow`.
 
 It reuses the official [scrcpy](https://github.com/Genymobile/scrcpy)
 server (Apache 2.0) on the phone. The client is pinned to **scrcpy-server
 5.0.1**; see `scrcpy-server.lock`.
 
-Requirements: Apple Silicon Mac, macOS 14 or later.
-
-> Status: milestone 2. DroidMirror connects to the phone, starts the
-> server and logs the video packet rate and bitrate in the terminal. There
-> is no window yet.
+Requirements: Apple Silicon Mac, macOS 14 or later, `adb`.
 
 ## Mac setup
 
@@ -37,11 +33,6 @@ Requirements: Apple Silicon Mac, macOS 14 or later.
    cargo run --release
    ```
 
-   Options: `--serial SERIAL` picks a device when several are connected,
-   `--forward` uses `adb forward` instead of `adb reverse`. Set
-   `DROIDMIRROR_LOG=debug` for verbose logs, and `ADB=/path/to/adb` if adb
-   is not on your `PATH`.
-
 ## Phone setup (Realme / Realme UI)
 
 1. **Enable Developer options:** Settings → About device (or About phone)
@@ -61,6 +52,85 @@ Requirements: Apple Silicon Mac, macOS 14 or later.
 5. **If the video shows but touches and keys do nothing:** in Developer
    options, turn on **Disable permission monitoring**, then unplug and
    replug the phone. Realme UI blocks injected input without it.
+
+## Using it
+
+The window is shaped like the phone. Drag it by its dark border; resize
+it from the edges (the aspect ratio is kept). It follows the phone's
+rotation.
+
+| Mac | Phone |
+|---|---|
+| Click / drag | Tap / swipe |
+| Scroll wheel or trackpad | Scroll |
+| Typing | Text (any keyboard layout) |
+| Return, Delete, arrows, Tab, Esc, Ctrl+key | Key presses |
+| Cmd+B or right click | Back |
+| Cmd+H | Home |
+| Cmd+S | Recent apps |
+| Cmd+C | Copy on the phone, into the Mac clipboard |
+| Cmd+V | Paste the Mac clipboard on the phone |
+| Drop files on the window | Copied to `/sdcard/Download` |
+| Cmd+Q | Quit (stops the server on the phone) |
+
+The phone's clipboard is copied to the Mac whenever it changes; the Mac
+clipboard is sent to the phone when you switch back to DroidMirror.
+
+If the phone is unplugged, the window says so and reconnects by itself
+when it comes back.
+
+### Options
+
+```text
+-s, --serial SERIAL      device to use when several are connected
+    --tcpip[=IP[:PORT]]  connect over Wi-Fi (see below)
+    --forward            use `adb forward` instead of `adb reverse`
+    --headless           no window: log video packet rate and bitrate only
+```
+
+Environment: `DROIDMIRROR_LOG=debug` for verbose logs (including video
+throughput once per second), `ADB=/path/to/adb` if adb is not found.
+
+### Wireless
+
+With the phone on the same Wi-Fi network:
+
+- `--tcpip` with the phone plugged in by USB switches it to wireless
+  debugging (`adb tcpip 5555`), connects to its Wi-Fi address, and then
+  you can unplug the cable.
+- `--tcpip=192.168.1.23` connects to a phone that is already listening
+  (after a previous `--tcpip`, or Android 11+ wireless debugging paired
+  with `adb pair`).
+
+## Measuring memory
+
+While mirroring:
+
+```bash
+footprint $(pgrep -x droidmirror)
+```
+
+The target is under 50 MB for the app process.
+
+## How it works
+
+- `adb push` the embedded server, `adb reverse` a local port (falling back
+  to `adb forward`), start it with `app_process`, then open the video and
+  control sockets. Server arguments: `video_codec=h264 max_size=1024
+  video_bit_rate=3000000 max_fps=30 audio=false control=true`.
+- **Video thread:** reads the socket continuously, converts Annex B to
+  AVCC, builds a `CMVideoFormatDescription` from SPS/PPS (rebuilt when they
+  change, e.g. on rotation), wraps each frame in a `CMSampleBuffer` marked
+  *display immediately* and enqueues it on the layer's
+  `sampleBufferRenderer`, which Apple documents as safe to feed from a
+  background thread. If the renderer falls behind, frames are dropped
+  until the next key frame and `RESET_VIDEO` (at most once a second) asks
+  the phone for one, so nothing piles up on either side.
+- **Main thread:** AppKit and input. Background threads wake it through a
+  `CFRunLoopSource` (event-driven, no timers).
+- **Control threads:** one writes control messages from a bounded queue,
+  one reads device messages (clipboard).
+- All unsafe FFI is in `src/macos/`.
 
 ## Updating the pinned server
 
