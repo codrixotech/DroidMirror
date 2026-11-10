@@ -6,6 +6,7 @@
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 mod adb;
+mod call;
 mod controller;
 mod h264;
 mod input;
@@ -34,11 +35,13 @@ usage: droidmirror [options]
                         debugging first (you can then unplug it)
       --forward         use `adb forward` instead of `adb reverse`
       --headless        no window: log video packet rate and bitrate only
+      --no-call-alerts  don't watch for incoming calls
   -V, --version         print version
   -h, --help            print this help
 
 shortcuts: Cmd+B Back, Cmd+H Home, Cmd+S Recent apps, right click Back,
-           Cmd+C copy on the phone, Cmd+V paste the Mac clipboard
+           Cmd+C copy on the phone, Cmd+V paste the Mac clipboard,
+           Cmd+Return answer a call, Cmd+Delete decline or end it
 
 environment:
   DROIDMIRROR_LOG       error | warn | info | debug | trace (default: info)
@@ -57,6 +60,7 @@ fn parse_args() -> Result<Option<Args>> {
         force_forward: false,
         tcpip: None,
         stats_level: log::Level::Debug,
+        call_alerts: true,
     };
     let mut headless = false;
     let mut it = std::env::args().skip(1);
@@ -69,6 +73,7 @@ fn parse_args() -> Result<Option<Args>> {
                 config.tcpip = Some(Tcpip::Addr(a["--tcpip=".len()..].to_owned()));
             }
             "--headless" => headless = true,
+            "--no-call-alerts" => config.call_alerts = false,
             "-V" | "--version" => {
                 println!(
                     "droidmirror {} (scrcpy-server {SERVER_VERSION})",
@@ -142,6 +147,7 @@ impl Ui for LogUi {
             UiEvent::Clipboard(t) => log::info!("device clipboard: {} bytes", t.len()),
             UiEvent::Fatal(e) => done(Err(e)),
             UiEvent::Notice(n) => log::info!("{n}"),
+            UiEvent::Call(state) => log::info!("call: {state:?}"),
         }
     }
 }

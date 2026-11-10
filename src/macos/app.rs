@@ -10,7 +10,7 @@ use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSMenu, NSMenuItem,
-    NSScreen, NSWindow, NSWindowDelegate,
+    NSRequestUserAttentionType, NSScreen, NSWindow, NSWindowDelegate,
 };
 use objc2_foundation::{
     MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
@@ -22,6 +22,7 @@ use super::display::Renderer;
 use super::main_queue::MainQueue;
 use super::view::{BEZEL, MirrorView, MirrorWindow};
 use crate::adb::Adb;
+use crate::call::{self, CallState};
 use crate::controller::ControlSender;
 use crate::input::{self, keycode};
 use crate::protocol::control::{ControlMsg, CopyKey, KeyAction};
@@ -52,6 +53,9 @@ struct AppState {
     video: (u32, u32),
     /// Pasteboard change count already synced to the phone (or set by it).
     pasteboard_seen: isize,
+    call: CallState,
+    /// Dock bounce request while ringing.
+    attention: Option<isize>,
 }
 
 define_class!(
@@ -138,6 +142,25 @@ define_class!(
             self.send(ControlMsg::GetClipboard(CopyKey::Copy));
         }
 
+        /// Answer button / Cmd+Return. Only while ringing.
+        #[unsafe(method(answerCall:))]
+        fn answer_call(&self, _sender: Option<&AnyObject>) {
+            if matches!(self.call_state(), CallState::Ringing { .. }) {
+                log::info!("answering call");
+                self.press_key(call::KEYCODE_CALL);
+            }
+        }
+
+        /// Decline / End button / Cmd+Delete. Only during a call: when
+        /// idle, KEYCODE_ENDCALL would turn the screen off instead.
+        #[unsafe(method(declineCall:))]
+        fn decline_call(&self, _sender: Option<&AnyObject>) {
+            if self.call_state() != CallState::Idle {
+                log::info!("ending call");
+                self.press_key(call::KEYCODE_ENDCALL);
+            }
+        }
+
         /// Cmd+V: paste the Mac clipboard on the phone.
         #[unsafe(method(pasteToDevice:))]
         fn paste_to_device(&self, _sender: Option<&AnyObject>) {
@@ -211,6 +234,8 @@ impl AppDelegate {
             control: None,
             video: (0, 0),
             pasteboard_seen: clipboard::change_count(),
+            call: CallState::Idle,
+            attention: None,
         });
 
         #[allow(deprecated)] // `activate` needs macOS 14 bundles; this works unbundled
@@ -264,6 +289,21 @@ impl AppDelegate {
             "Recent Apps",
             Some(sel!(pressRecents:)),
             "s",
+            Some(self),
+        ));
+        device.addItem(&NSMenuItem::separatorItem(mtm));
+        device.addItem(&item(
+            mtm,
+            "Answer Call",
+            Some(sel!(answerCall:)),
+            "\r",
+            Some(self),
+        ));
+        device.addItem(&item(
+            mtm,
+            "Decline / End Call",
+            Some(sel!(declineCall:)),
+            "\u{8}",
             Some(self),
         ));
         add_submenu(mtm, &bar, "Device", &device);
@@ -364,6 +404,7 @@ impl AppDelegate {
                 self.fit_window(&window, width, height, first);
             }
             UiEvent::Disconnected => {
+                self.on_call_state(&window, &view, CallState::Idle);
                 view.set_control(None);
                 if let Some(state) = self.ivars().state.borrow_mut().as_mut() {
                     state.control = None;
@@ -380,6 +421,41 @@ impl AppDelegate {
             }
             UiEvent::Fatal(text) => view.show_status(&text),
             UiEvent::Notice(text) => view.show_toast(&text),
+            UiEvent::Call(state) => self.on_call_state(&window, &view, state),
+        }
+    }
+
+    fn call_state(&self) -> CallState {
+        self.ivars()
+            .state
+            .borrow()
+            .as_ref()
+            .map_or(CallState::Idle, |s| s.call.clone())
+    }
+
+    fn on_call_state(&self, window: &MirrorWindow, view: &MirrorView, state: CallState) {
+        let app = NSApplication::sharedApplication(self.mtm());
+        let previous_attention = {
+            let mut st = self.ivars().state.borrow_mut();
+            let Some(st) = st.as_mut() else { return };
+            st.call = state.clone();
+            st.attention.take()
+        };
+        if let Some(id) = previous_attention {
+            app.cancelUserAttentionRequest(id);
+        }
+        view.show_call(&state);
+        if matches!(state, CallState::Ringing { .. }) {
+            // Bring the phone into view without stealing keyboard focus,
+            // and bounce the Dock icon until the user looks.
+            if window.isMiniaturized() {
+                window.deminiaturize(None);
+            }
+            window.orderFrontRegardless();
+            let id = app.requestUserAttention(NSRequestUserAttentionType::CriticalRequest);
+            if let Some(st) = self.ivars().state.borrow_mut().as_mut() {
+                st.attention = Some(id);
+            }
         }
     }
 

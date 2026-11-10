@@ -70,7 +70,9 @@ rotation.
 | Cmd+S | Recent apps |
 | Cmd+C | Copy on the phone, into the Mac clipboard |
 | Cmd+V | Paste the Mac clipboard on the phone |
-| Drop files on the window | Copied to `/sdcard/Download` |
+| Drop files (from Finder) on the window | Copied to `/sdcard/Download` |
+| Cmd+Return or **Answer** | Answer an incoming call |
+| Cmd+Delete or **Decline** / **End** | Decline or end a call |
 | Cmd+Q | Quit (stops the server on the phone) |
 
 The phone's clipboard is copied to the Mac whenever it changes; the Mac
@@ -79,6 +81,19 @@ clipboard is sent to the phone when you switch back to DroidMirror.
 If the phone is unplugged, the window says so and reconnects by itself
 when it comes back.
 
+### Phone calls
+
+When a call comes in, the window comes to the front, the Dock icon
+bounces, and a banner shows **Answer** and **Decline**. Answering from the
+Mac picks up the call **on the phone**: the audio stays on the phone (tap
+the speaker button on the mirrored screen to talk hands-free). Using the
+Mac's microphone and speakers for the call isn't possible over adb.
+
+Call state is read with `adb shell dumpsys telephony.registry` once a
+second while connected. Recent Android versions hide the caller's number
+there, so the banner may just say "Incoming call"; the caller's name is
+visible on the mirrored screen. Turn this off with `--no-call-alerts`.
+
 ### Options
 
 ```text
@@ -86,6 +101,7 @@ when it comes back.
     --tcpip[=IP[:PORT]]  connect over Wi-Fi (see below)
     --forward            use `adb forward` instead of `adb reverse`
     --headless           no window: log video packet rate and bitrate only
+    --no-call-alerts     don't watch for incoming calls
 ```
 
 Environment: `DROIDMIRROR_LOG=debug` for verbose logs (including video

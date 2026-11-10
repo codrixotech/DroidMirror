@@ -9,9 +9,9 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSEvent,
-    NSFont, NSPasteboardTypeFileURL, NSResponder, NSTextAlignment, NSTextField, NSView, NSWindow,
-    NSWindowStyleMask,
+    NSBackingStoreType, NSButton, NSColor, NSDragOperation, NSDraggingDestination, NSDraggingInfo,
+    NSEvent, NSFont, NSPasteboardTypeFileURL, NSResponder, NSTextAlignment, NSTextField, NSView,
+    NSWindow, NSWindowStyleMask,
 };
 use objc2_av_foundation::AVSampleBufferDisplayLayer;
 use objc2_foundation::{
@@ -21,6 +21,7 @@ use objc2_foundation::{
 use objc2_quartz_core::CATransaction;
 
 use super::display;
+use crate::call::CallState;
 use crate::controller::ControlSender;
 use crate::input::{self, KeyInput, Rect};
 use crate::protocol::control::{
@@ -88,6 +89,8 @@ pub struct ViewIvars {
     status: Retained<NSTextField>,
     /// Short-lived message at the bottom (file transfers).
     toast: Retained<NSTextField>,
+    /// Incoming / ongoing call banner at the top.
+    call: CallBanner,
     input: RefCell<InputState>,
     on_drop: RefCell<Option<DropHandler>>,
 }
@@ -139,6 +142,9 @@ define_class!(
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
             let p = self.event_point(event);
+            if self.ivars().call.covers(p) {
+                return; // a click on the call banner's background
+            }
             if !self.video_rect().contains(p.0, p.1) {
                 // The bezel moves the window.
                 if let Some(window) = self.window() {
@@ -325,10 +331,13 @@ impl MirrorView {
         toast.setSelectable(false);
         toast.setHidden(true);
 
+        let call = CallBanner::new(mtm);
+
         let this = Self::alloc(mtm).set_ivars(ViewIvars {
             video_layer,
             status,
             toast,
+            call,
             input: RefCell::default(),
             on_drop: RefCell::new(None),
         });
@@ -345,6 +354,7 @@ impl MirrorView {
         this.ivars().video_layer.setMasksToBounds(true);
         this.addSubview(&this.ivars().status);
         this.addSubview(&this.ivars().toast);
+        this.addSubview(&this.ivars().call.container);
 
         // SAFETY: reading an immutable AppKit constant.
         let file_url = unsafe { NSPasteboardTypeFileURL };
@@ -379,6 +389,34 @@ impl MirrorView {
         status.setStringValue(&NSString::from_str(text));
         status.setHidden(false);
         self.ivars().video_layer.setOpacity(0.3);
+        self.layout_contents();
+    }
+
+    /// Shows, updates or hides the call banner.
+    pub fn show_call(&self, state: &CallState) {
+        let b = &self.ivars().call;
+        match state {
+            CallState::Idle => {
+                b.container.setHidden(true);
+                return;
+            }
+            CallState::Ringing { number } => {
+                let text = match number {
+                    Some(n) => format!("Incoming call\n{n}"),
+                    None => "Incoming call".to_owned(),
+                };
+                b.label.setStringValue(&NSString::from_str(&text));
+                b.answer.setHidden(false);
+                b.decline.setTitle(ns_string!("Decline"));
+            }
+            CallState::Active => {
+                b.label
+                    .setStringValue(ns_string!("On a call (audio stays on the phone)"));
+                b.answer.setHidden(true);
+                b.decline.setTitle(ns_string!("End"));
+            }
+        }
+        b.container.setHidden(false);
         self.layout_contents();
     }
 
@@ -450,6 +488,8 @@ impl MirrorView {
             NSSize::new(max_w, h),
         ));
 
+        self.ivars().call.layout(inner);
+
         let toast = &self.ivars().toast;
         toast.setPreferredMaxLayoutWidth(max_w);
         let th = toast.fittingSize().height + 8.0;
@@ -497,6 +537,112 @@ impl MirrorView {
     pub fn send(&self, msg: ControlMsg) {
         if let Some(c) = &self.ivars().input.borrow().control {
             c.send(msg);
+        }
+    }
+}
+
+/// Banner with a label and Answer / Decline buttons. The buttons have no
+/// target, so their actions (`answerCall:`, `declineCall:`) travel up the
+/// responder chain to the app delegate.
+struct CallBanner {
+    container: Retained<NSView>,
+    label: Retained<NSTextField>,
+    answer: Retained<NSButton>,
+    decline: Retained<NSButton>,
+}
+
+impl CallBanner {
+    const HEIGHT: f64 = 96.0;
+
+    fn new(mtm: MainThreadMarker) -> Self {
+        let container = NSView::new(mtm);
+        container.setWantsLayer(true);
+        if let Some(layer) = container.layer() {
+            let bg = NSColor::colorWithWhite_alpha(0.12, 0.92);
+            layer.setBackgroundColor(Some(&bg.CGColor()));
+            layer.setCornerRadius(16.0);
+        }
+        container.setHidden(true);
+
+        let label = NSTextField::wrappingLabelWithString(ns_string!(""), mtm);
+        label.setTextColor(Some(&NSColor::whiteColor()));
+        label.setAlignment(NSTextAlignment::Center);
+        label.setFont(Some(&NSFont::boldSystemFontOfSize(14.0)));
+        label.setSelectable(false);
+
+        // SAFETY: nil target (responder chain); the selectors exist on the
+        // app delegate.
+        let (answer, decline) = unsafe {
+            (
+                NSButton::buttonWithTitle_target_action(
+                    ns_string!("Answer"),
+                    None,
+                    Some(sel!(answerCall:)),
+                    mtm,
+                ),
+                NSButton::buttonWithTitle_target_action(
+                    ns_string!("Decline"),
+                    None,
+                    Some(sel!(declineCall:)),
+                    mtm,
+                ),
+            )
+        };
+        answer.setBezelColor(Some(&NSColor::systemGreenColor()));
+        decline.setBezelColor(Some(&NSColor::systemRedColor()));
+
+        container.addSubview(&label);
+        container.addSubview(&answer);
+        container.addSubview(&decline);
+        Self {
+            container,
+            label,
+            answer,
+            decline,
+        }
+    }
+
+    /// Whether a point (view coordinates) is on the visible banner.
+    fn covers(&self, p: (f64, f64)) -> bool {
+        let f = self.container.frame();
+        !self.container.isHidden()
+            && Rect {
+                x: f.origin.x,
+                y: f.origin.y,
+                w: f.size.width,
+                h: f.size.height,
+            }
+            .contains(p.0, p.1)
+    }
+
+    /// Positions the banner at the top of `inner` (view coordinates).
+    fn layout(&self, inner: Rect) {
+        let w = (inner.w - 16.0).max(120.0);
+        self.container.setFrame(NSRect::new(
+            NSPoint::new(inner.x + (inner.w - w) / 2.0, inner.y + 8.0),
+            NSSize::new(w, Self::HEIGHT),
+        ));
+        // The container isn't flipped: y grows upwards inside it.
+        self.label.setFrame(NSRect::new(
+            NSPoint::new(8.0, 44.0),
+            NSSize::new(w - 16.0, 44.0),
+        ));
+        let bw = ((w - 36.0) / 2.0).min(120.0);
+        let y = 10.0;
+        if self.answer.isHidden() {
+            self.decline.setFrame(NSRect::new(
+                NSPoint::new((w - bw) / 2.0, y),
+                NSSize::new(bw, 30.0),
+            ));
+        } else {
+            let gap = 12.0;
+            let x0 = (w - 2.0 * bw - gap) / 2.0;
+            self.decline
+                .setFrame(NSRect::new(NSPoint::new(x0, y), NSSize::new(bw, 30.0)));
+            self.answer.setFrame(NSRect::new(
+                NSPoint::new(x0 + bw + gap, y),
+                NSSize::new(bw, 30.0),
+            ));
         }
     }
 }

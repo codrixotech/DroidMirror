@@ -4,6 +4,7 @@
 
 use std::net::{Shutdown, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -11,6 +12,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 
 use crate::adb::{self, Adb};
+use crate::call::{self, CallState};
 use crate::controller::{self, ControlSender};
 use crate::protocol::control::ControlMsg;
 use crate::server::{self, ServerHandle, VersionMismatch};
@@ -36,6 +38,8 @@ pub enum UiEvent {
     Fatal(String),
     /// Brief message (file transfers).
     Notice(String),
+    /// Phone call state changed.
+    Call(CallState),
 }
 
 pub trait Ui: Send + Sync + 'static {
@@ -56,6 +60,8 @@ pub struct Config {
     pub force_forward: bool,
     pub tcpip: Option<Tcpip>,
     pub stats_level: log::Level,
+    /// Watch for incoming calls (`dumpsys telephony.registry` once a second).
+    pub call_alerts: bool,
 }
 
 #[derive(Default)]
@@ -277,7 +283,7 @@ impl Runner {
             if state.stopping {
                 return Ok(()); // quit while connecting; `server` drops here
             }
-            state.serial = Some(serial);
+            state.serial = Some(serial.clone());
             state.sockets = vec![conn.video.try_clone()?, conn.control.try_clone()?];
         }
 
@@ -289,6 +295,16 @@ impl Runner {
             control: control.clone(),
         });
 
+        let call_watch = Arc::new(AtomicBool::new(true));
+        if self.config.call_alerts {
+            call::spawn_watcher(
+                self.adb.clone(),
+                serial,
+                self.ui.clone(),
+                call_watch.clone(),
+            );
+        }
+
         let mut events = Events {
             ui: self.ui.clone(),
             control: control.clone(),
@@ -296,6 +312,7 @@ impl Runner {
         let result = video::run(conn.video, sink, &mut events, self.config.stats_level);
 
         // Tear down this connection.
+        call_watch.store(false, Ordering::Relaxed);
         control.stop_writer();
         let mut state = self.shared.state.lock().unwrap();
         for s in state.sockets.drain(..) {
