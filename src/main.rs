@@ -13,6 +13,7 @@ mod input;
 mod logger;
 #[cfg(target_os = "macos")]
 mod macos;
+mod pairing;
 mod protocol;
 mod server;
 mod session;
@@ -148,6 +149,12 @@ impl Ui for LogUi {
             UiEvent::Fatal(e) => done(Err(e)),
             UiEvent::Notice(n) => log::info!("{n}"),
             UiEvent::Call(state) => log::info!("call: {state:?}"),
+            UiEvent::Pairing { .. } => log::info!(
+                "no phone found. Turn on Developer options → Wireless debugging, then either \
+                 run DroidMirror with a window and scan its QR code, or pair with a code: \
+                 `adb pair IP:PORT CODE` (Wireless debugging → Pair device with pairing code)"
+            ),
+            UiEvent::PairingProgress(p) => log::info!("{p}"),
         }
     }
 }

@@ -14,6 +14,7 @@ use anyhow::{Context, Result, bail};
 use crate::adb::{self, Adb};
 use crate::call::{self, CallState};
 use crate::controller::{self, ControlSender};
+use crate::pairing::{self, PairingOffer, ServiceKind};
 use crate::protocol::control::ControlMsg;
 use crate::server::{self, ServerHandle, VersionMismatch};
 use crate::video::{self, VideoEvents, VideoSink};
@@ -40,6 +41,12 @@ pub enum UiEvent {
     Notice(String),
     /// Phone call state changed.
     Call(CallState),
+    /// No phone found: show Wi-Fi setup with this QR code to pair one.
+    Pairing {
+        qr: String,
+    },
+    /// Progress text for the setup screen.
+    PairingProgress(String),
 }
 
 pub trait Ui: Send + Sync + 'static {
@@ -115,6 +122,8 @@ impl Session {
             shared: shared.clone(),
             ui: ui.clone(),
             wireless_addr: None,
+            offer: None,
+            offer_shown: false,
         };
         let thread = thread::Builder::new()
             .name("video".into())
@@ -203,6 +212,9 @@ struct Runner {
     ui: Arc<dyn Ui>,
     /// Remembered after switching a USB device to Wi-Fi.
     wireless_addr: Option<String>,
+    /// Current QR pairing invitation, and whether the UI shows it.
+    offer: Option<PairingOffer>,
+    offer_shown: bool,
 }
 
 impl Runner {
@@ -236,6 +248,14 @@ impl Runner {
                         break;
                     }
                     let msg = format!("{e:#}");
+                    // While the pairing screen is up, "no device" is implied.
+                    let waiting = matches!(
+                        e.downcast_ref::<adb::DeviceError>(),
+                        Some(adb::DeviceError::NoDevice)
+                    );
+                    if waiting && self.offer_shown {
+                        last_error = msg.clone();
+                    }
                     if msg != last_error {
                         log::warn!("{msg}");
                         self.ui.post(UiEvent::Status(msg.clone()));
@@ -354,13 +374,97 @@ impl Runner {
             return Ok(adb::select_device(&self.adb.devices()?, Some(&addr))?);
         }
 
-        let serial = adb::select_device(&self.adb.devices()?, self.config.serial.as_deref())?;
+        let devices = self.adb.devices()?;
+        let serial = match adb::select_device(&devices, self.config.serial.as_deref()) {
+            Ok(s) => s,
+            // Nothing over USB or already connected: look on the network.
+            Err(adb::DeviceError::NoDevice) if self.config.serial.is_none() => {
+                return self.find_on_network();
+            }
+            // adb often lists one Wi-Fi phone twice (ip:port and its mDNS
+            // name). Use it if all entries are the same phone.
+            Err(adb::DeviceError::Ambiguous(list)) if self.config.serial.is_none() => self
+                .same_phone(&devices)
+                .ok_or(adb::DeviceError::Ambiguous(list))?,
+            Err(e) => return Err(e.into()),
+        };
+        self.offer_shown = false;
         if matches!(self.config.tcpip, Some(Tcpip::Auto)) && !serial.contains(':') {
             let addr = self.switch_to_wireless(&serial)?;
             self.wireless_addr = Some(addr.clone());
             return Ok(addr);
         }
         Ok(serial)
+    }
+
+    /// No device connected: connect to a paired phone advertising Wireless
+    /// debugging, or else offer QR pairing and complete it when the phone
+    /// scans the code. Returns `NoDevice` while still waiting.
+    fn find_on_network(&mut self) -> Result<String> {
+        let services = pairing::discover(&self.adb);
+
+        for svc in services.iter().filter(|s| s.kind == ServiceKind::Connect) {
+            match self.adb.connect(&svc.addr) {
+                Ok(()) => {
+                    log::info!("found {} on the network at {}", svc.instance, svc.addr);
+                    self.offer_shown = false;
+                    return Ok(adb::select_device(&self.adb.devices()?, Some(&svc.addr))?);
+                }
+                Err(e) => log::debug!("could not connect to {}: {e:#}", svc.addr),
+            }
+        }
+
+        let offer = self.offer.get_or_insert_with(PairingOffer::new).clone();
+        if !self.offer_shown {
+            log::info!("waiting for a phone; pair one by scanning the QR code in the window");
+            log::debug!("pairing offer {}", offer.name);
+            self.ui.post(UiEvent::Pairing {
+                qr: offer.qr_text(),
+            });
+            self.offer_shown = true;
+        }
+        if let Some(svc) = offer.find(&services) {
+            log::info!("phone scanned the code; pairing with {}", svc.addr);
+            self.ui.post(UiEvent::PairingProgress("Pairing…".into()));
+            let out = self.adb.pair(&svc.addr, &offer.password)?;
+            // A code works once; show a fresh one next time.
+            self.offer = None;
+            self.offer_shown = false;
+            if pairing::pair_succeeded(&out) {
+                log::info!("{}", out.trim());
+                self.ui
+                    .post(UiEvent::PairingProgress("Paired. Connecting…".into()));
+                // adb auto-connects to the newly paired phone; give it a moment.
+                self.shared.sleep(Duration::from_secs(2));
+            } else {
+                log::warn!("pairing failed: {}", out.trim());
+                self.ui
+                    .post(UiEvent::Notice(format!("Pairing failed: {}", out.trim())));
+            }
+        }
+        Err(adb::DeviceError::NoDevice.into())
+    }
+
+    /// If every ready device is the same phone (same serial number),
+    /// returns one of them.
+    fn same_phone(&self, devices: &[adb::DeviceEntry]) -> Option<String> {
+        let ready: Vec<&str> = devices
+            .iter()
+            .filter(|d| d.state == "device")
+            .map(|d| d.serial.as_str())
+            .collect();
+        let ids: Vec<String> = ready
+            .iter()
+            .map(|s| {
+                self.adb
+                    .serial_number(s)
+                    .unwrap_or_else(|_| (*s).to_owned())
+            })
+            .collect();
+        let first = ids.first()?;
+        ids.iter()
+            .all(|id| id == first)
+            .then(|| ready[0].to_owned())
     }
 
     /// `adb tcpip` on a USB device, then `adb connect` to its Wi-Fi address.

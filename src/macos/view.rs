@@ -10,8 +10,8 @@ use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSBackingStoreType, NSButton, NSColor, NSDragOperation, NSDraggingDestination, NSDraggingInfo,
-    NSEvent, NSFont, NSPasteboardTypeFileURL, NSResponder, NSTextAlignment, NSTextField, NSView,
-    NSWindow, NSWindowStyleMask,
+    NSEvent, NSFont, NSImage, NSImageScaling, NSImageView, NSPasteboardTypeFileURL, NSResponder,
+    NSTextAlignment, NSTextField, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_av_foundation::AVSampleBufferDisplayLayer;
 use objc2_foundation::{
@@ -91,6 +91,8 @@ pub struct ViewIvars {
     toast: Retained<NSTextField>,
     /// Incoming / ongoing call banner at the top.
     call: CallBanner,
+    /// Wi-Fi setup instructions with the pairing QR code.
+    setup: SetupPanel,
     input: RefCell<InputState>,
     on_drop: RefCell<Option<DropHandler>>,
 }
@@ -332,12 +334,14 @@ impl MirrorView {
         toast.setHidden(true);
 
         let call = CallBanner::new(mtm);
+        let setup = SetupPanel::new(mtm);
 
         let this = Self::alloc(mtm).set_ivars(ViewIvars {
             video_layer,
             status,
             toast,
             call,
+            setup,
             input: RefCell::default(),
             on_drop: RefCell::new(None),
         });
@@ -354,6 +358,7 @@ impl MirrorView {
         this.ivars().video_layer.setMasksToBounds(true);
         this.addSubview(&this.ivars().status);
         this.addSubview(&this.ivars().toast);
+        this.addSubview(&this.ivars().setup.container);
         this.addSubview(&this.ivars().call.container);
 
         // SAFETY: reading an immutable AppKit constant.
@@ -383,8 +388,34 @@ impl MirrorView {
         *self.ivars().on_drop.borrow_mut() = Some(Rc::new(f));
     }
 
+    /// Shows the Wi-Fi setup screen with a pairing QR code.
+    pub fn show_setup(&self, qr: Option<&NSImage>) {
+        let setup = &self.ivars().setup;
+        setup.qr.setImage(qr);
+        setup.progress.setStringValue(&NSString::from_str(&format!(
+            "Waiting for the phone…\n\n{SETUP_FOOTER}"
+        )));
+        setup.container.setHidden(false);
+        self.ivars().status.setHidden(true);
+        self.ivars().video_layer.setOpacity(0.0);
+        self.layout_contents();
+    }
+
+    pub fn set_setup_progress(&self, text: &str) {
+        let text = format!("{text}\n\n{SETUP_FOOTER}");
+        self.ivars()
+            .setup
+            .progress
+            .setStringValue(&NSString::from_str(&text));
+    }
+
+    pub fn hide_setup(&self) {
+        self.ivars().setup.container.setHidden(true);
+    }
+
     /// Shows a message over a dimmed video.
     pub fn show_status(&self, text: &str) {
+        self.hide_setup();
         let status = &self.ivars().status;
         status.setStringValue(&NSString::from_str(text));
         status.setHidden(false);
@@ -440,6 +471,7 @@ impl MirrorView {
     }
 
     pub fn hide_status(&self) {
+        self.hide_setup();
         self.ivars().status.setHidden(true);
         self.ivars().video_layer.setOpacity(1.0);
     }
@@ -489,6 +521,7 @@ impl MirrorView {
         ));
 
         self.ivars().call.layout(inner);
+        self.ivars().setup.layout(inner);
 
         let toast = &self.ivars().toast;
         toast.setPreferredMaxLayoutWidth(max_w);
@@ -644,6 +677,94 @@ impl CallBanner {
                 NSSize::new(bw, 30.0),
             ));
         }
+    }
+}
+
+/// One-time Wi-Fi setup: instructions and the pairing QR code.
+struct SetupPanel {
+    container: Retained<NSView>,
+    text: Retained<NSTextField>,
+    qr: Retained<NSImageView>,
+    progress: Retained<NSTextField>,
+}
+
+const SETUP_TEXT: &str = "Connect over Wi-Fi\n\n\
+One-time setup on the phone:\n\
+1. Settings → About device → Version: tap Build number 7 times.\n\
+2. Settings → Additional settings → Developer options: turn on Wireless debugging \
+(and Disable permission monitoring, so taps work).\n\
+3. Tap Wireless debugging → Pair device with QR code, and scan:";
+
+const SETUP_FOOTER: &str = "Phone and Mac must be on the same Wi-Fi.\n\
+Already paired? Just turn on Wireless debugging.\n\
+A USB cable with USB debugging on works too.";
+
+impl SetupPanel {
+    fn new(mtm: MainThreadMarker) -> Self {
+        let container = NSView::new(mtm);
+        container.setHidden(true);
+
+        let text = NSTextField::wrappingLabelWithString(&NSString::from_str(SETUP_TEXT), mtm);
+        text.setTextColor(Some(&NSColor::whiteColor()));
+        text.setFont(Some(&NSFont::systemFontOfSize(12.0)));
+        text.setSelectable(false);
+
+        let qr = NSImageView::new(mtm);
+        qr.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
+        // White quiet zone around the code helps phone cameras.
+        qr.setWantsLayer(true);
+        if let Some(layer) = qr.layer() {
+            layer.setBackgroundColor(Some(&NSColor::whiteColor().CGColor()));
+            layer.setCornerRadius(8.0);
+        }
+
+        let progress = NSTextField::wrappingLabelWithString(
+            &NSString::from_str(&format!("Waiting for the phone…\n\n{SETUP_FOOTER}")),
+            mtm,
+        );
+        progress.setTextColor(Some(&NSColor::colorWithWhite_alpha(0.8, 1.0)));
+        progress.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+        progress.setAlignment(NSTextAlignment::Center);
+        progress.setSelectable(false);
+
+        container.addSubview(&text);
+        container.addSubview(&qr);
+        container.addSubview(&progress);
+        Self {
+            container,
+            text,
+            qr,
+            progress,
+        }
+    }
+
+    /// Lays out top to bottom inside `inner` (the container isn't flipped).
+    fn layout(&self, inner: Rect) {
+        self.container.setFrame(to_ns(inner));
+        let pad = 16.0;
+        let w = (inner.w - 2.0 * pad).max(60.0);
+        let h = inner.h;
+
+        self.text.setPreferredMaxLayoutWidth(w);
+        let text_h = self.text.fittingSize().height;
+        let mut top = h - pad - text_h;
+        self.text
+            .setFrame(NSRect::new(NSPoint::new(pad, top), NSSize::new(w, text_h)));
+
+        let side = (w - 40.0).min(220.0).min(h * 0.4).max(80.0);
+        top -= 12.0 + side;
+        self.qr.setFrame(NSRect::new(
+            NSPoint::new((inner.w - side) / 2.0, top),
+            NSSize::new(side, side),
+        ));
+
+        self.progress.setPreferredMaxLayoutWidth(w);
+        let progress_h = self.progress.fittingSize().height.min((top - pad).max(0.0));
+        top -= 12.0 + progress_h;
+        self.progress.setFrame(NSRect::new(
+            NSPoint::new(pad, top.max(pad)),
+            NSSize::new(w, progress_h),
+        ));
     }
 }
 

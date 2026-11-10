@@ -5,6 +5,7 @@ mod app;
 mod clipboard;
 mod display;
 mod main_queue;
+mod qr;
 mod view;
 
 pub use app::run;

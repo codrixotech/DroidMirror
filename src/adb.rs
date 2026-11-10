@@ -205,6 +205,29 @@ impl Adb {
         }
     }
 
+    /// The phone's hardware serial number (same over USB and Wi-Fi).
+    pub fn serial_number(&self, serial: &str) -> Result<String> {
+        Ok(self.run(Some(serial), &["get-serialno"])?.trim().to_owned())
+    }
+
+    /// `adb mdns services` output (phones advertising Wireless debugging).
+    pub fn mdns_services(&self) -> Result<String> {
+        self.run(None, &["mdns", "services"])
+    }
+
+    /// `adb pair host:port password`; returns adb's output, which says
+    /// whether pairing worked (the exit status doesn't always).
+    pub fn pair(&self, addr: &str, password: &str) -> Result<String> {
+        let out = self
+            .cmd(None)
+            .args(["pair", addr, password])
+            .output()
+            .with_context(|| format!("failed to run {}", self.exe.display()))?;
+        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+        Ok(text)
+    }
+
     /// Starts `adb shell <args>` with stdout and stderr piped.
     pub fn spawn_shell(&self, serial: &str, args: &[String]) -> Result<Child> {
         self.cmd(Some(serial))

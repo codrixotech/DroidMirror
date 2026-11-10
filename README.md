@@ -35,23 +35,35 @@ Requirements: Apple Silicon Mac, macOS 14 or later, `adb`.
 
 ## Phone setup (Realme / Realme UI)
 
+You need Developer options once per phone. No cable is needed.
+
+### Over Wi-Fi (recommended)
+
 1. **Enable Developer options:** Settings → About device (or About phone)
    → Version → tap **Build number** 7 times, entering your PIN if asked.
-2. **Enable USB debugging:** Settings → Additional settings → Developer
-   options → turn on **USB debugging**.
-3. **Connect the phone by USB.** Unlock it and accept the "Allow USB
-   debugging?" prompt (tick "Always allow from this computer").
-4. **Check the connection:**
+2. Settings → Additional settings → **Developer options**: turn on
+   **Wireless debugging** and **Disable permission monitoring** (Realme UI
+   blocks taps and typing from the Mac without it).
+3. Start DroidMirror. With no phone connected, it shows a **QR code**.
+4. On the phone, tap **Wireless debugging → Pair device with QR code** and
+   scan it. DroidMirror pairs, connects and starts mirroring.
 
-   ```bash
-   adb devices
-   ```
+The phone and the Mac must be on the same Wi-Fi network. After pairing,
+DroidMirror finds the phone by itself every time; if Android has switched
+Wireless debugging off (after a restart or a Wi-Fi change), switch it
+back on and it reconnects. There's no need to pair again.
 
-   It should list your device as `device`. `unauthorized` means the prompt
-   on the phone was not accepted; unplug, replug and accept it.
-5. **If the video shows but touches and keys do nothing:** in Developer
-   options, turn on **Disable permission monitoring**, then unplug and
-   replug the phone. Realme UI blocks injected input without it.
+### Over USB
+
+Turn on **USB debugging** in Developer options instead, plug the phone in
+and accept the "Allow USB debugging?" prompt.
+
+### If adb isn't found
+
+DroidMirror uses `adb` from your `PATH`, Homebrew
+(`brew install android-platform-tools`) or Android Studio
+(`~/Library/Android/sdk/platform-tools`). Use only one of them: two
+different adb versions keep restarting each other and drop the phone.
 
 ## Using it
 
@@ -107,16 +119,14 @@ visible on the mirrored screen. Turn this off with `--no-call-alerts`.
 Environment: `DROIDMIRROR_LOG=debug` for verbose logs (including video
 throughput once per second), `ADB=/path/to/adb` if adb is not found.
 
-### Wireless
+### Wireless options
 
-With the phone on the same Wi-Fi network:
+QR pairing (above) covers most cases. Also available:
 
-- `--tcpip` with the phone plugged in by USB switches it to wireless
-  debugging (`adb tcpip 5555`), connects to its Wi-Fi address, and then
-  you can unplug the cable.
-- `--tcpip=192.168.1.23` connects to a phone that is already listening
-  (after a previous `--tcpip`, or Android 11+ wireless debugging paired
-  with `adb pair`).
+- `--tcpip` with the phone plugged in by USB switches it to network adb
+  (`adb tcpip 5555`), connects to its Wi-Fi address, and then you can
+  unplug the cable (useful on Android 10 and older).
+- `--tcpip=IP:PORT` connects to a specific address.
 
 ## Measuring memory
 

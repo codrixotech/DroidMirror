@@ -17,10 +17,10 @@ use objc2_foundation::{
     NSString, ns_string,
 };
 
-use super::clipboard;
 use super::display::Renderer;
 use super::main_queue::MainQueue;
 use super::view::{BEZEL, MirrorView, MirrorWindow};
+use super::{clipboard, qr};
 use crate::adb::Adb;
 use crate::call::{self, CallState};
 use crate::controller::ControlSender;
@@ -422,6 +422,14 @@ impl AppDelegate {
             UiEvent::Fatal(text) => view.show_status(&text),
             UiEvent::Notice(text) => view.show_toast(&text),
             UiEvent::Call(state) => self.on_call_state(&window, &view, state),
+            UiEvent::Pairing { qr } => {
+                let image = qr::image(&qr);
+                if image.is_none() {
+                    log::warn!("could not render the pairing QR code");
+                }
+                view.show_setup(image.as_deref());
+            }
+            UiEvent::PairingProgress(text) => view.set_setup_progress(&text),
         }
     }
 
