@@ -19,10 +19,12 @@ use objc2_foundation::{
 
 use super::display::Renderer;
 use super::main_queue::MainQueue;
+use super::tls::SecureTransport;
 use super::view::{BEZEL, MirrorView, MirrorWindow};
-use super::{clipboard, qr};
+use super::{bonjour, clipboard, qr};
 use crate::adb::Adb;
 use crate::call::{self, CallState};
+use crate::companion::{Companion, PairingStore};
 use crate::controller::ControlSender;
 use crate::input::{self, keycode};
 use crate::protocol::control::{ControlMsg, CopyKey, KeyAction};
@@ -56,6 +58,8 @@ struct AppState {
     call: CallState,
     /// Dock bounce request while ringing.
     attention: Option<isize>,
+    /// Bonjour browsing for companion phones (stops when dropped).
+    _browser: bonjour::Browser,
 }
 
 define_class!(
@@ -214,11 +218,21 @@ impl AppDelegate {
         let me = self.retain();
         let queue = Arc::new(MainQueue::install(mtm, move |event| me.handle(event)));
         let renderer = Renderer::new(view.video_layer());
+
+        // Companion-app mode: find phones running the DroidMirror app.
+        let (browser, peers) = bonjour::start(mtm);
+        let companion = PairingStore::default_path().map(|path| Companion {
+            tls: Arc::new(SecureTransport),
+            discovery: peers,
+            store: Arc::new(PairingStore::new(path)),
+            mac_name: computer_name(),
+        });
         let session = match Session::start(
             self.ivars().adb.clone(),
             self.ivars().config.clone(),
             Box::new(renderer),
             queue,
+            companion,
         ) {
             Ok(s) => Some(s),
             Err(e) => {
@@ -236,6 +250,7 @@ impl AppDelegate {
             pasteboard_seen: clipboard::change_count(),
             call: CallState::Idle,
             attention: None,
+            _browser: browser,
         });
 
         #[allow(deprecated)] // `activate` needs macOS 14 bundles; this works unbundled
@@ -497,6 +512,19 @@ impl AppDelegate {
         window.setFrame_display_animate(frame, true, !first);
         window.invalidateShadow();
     }
+}
+
+/// The Mac's name as shown in System Settings ("Sam's MacBook Air"),
+/// shown on the phone when pairing.
+fn computer_name() -> String {
+    std::process::Command::new("scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "Mac".to_owned())
 }
 
 fn item(

@@ -2,20 +2,24 @@
 //! server, stream video until it ends, then reconnect. The UI is told what
 //! happens through `Ui::post`; it never blocks on any of this.
 
+use std::io::Read;
 use std::net::{Shutdown, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
 use crate::adb::{self, Adb};
 use crate::call::{self, CallState};
+use crate::companion::{self, Channel, Companion, CompanionError, Peer};
 use crate::controller::{self, ControlSender};
 use crate::pairing::{self, PairingOffer, ServiceKind};
 use crate::protocol::control::ControlMsg;
+use crate::protocol::device_msg::DeviceMsg;
+use crate::protocol::parse_device_name;
 use crate::server::{self, ServerHandle, VersionMismatch};
 use crate::video::{self, VideoEvents, VideoSink};
 
@@ -114,6 +118,7 @@ impl Session {
         config: Config,
         sink: Box<dyn VideoSink>,
         ui: Arc<dyn Ui>,
+        companion: Option<Companion>,
     ) -> Result<Self> {
         let shared = Arc::new(Shared::default());
         let runner = Runner {
@@ -124,6 +129,8 @@ impl Session {
             wireless_addr: None,
             offer: None,
             offer_shown: false,
+            companion,
+            declined: Vec::new(),
         };
         let thread = thread::Builder::new()
             .name("video".into())
@@ -163,8 +170,10 @@ impl Session {
     /// media scanner to index them.
     pub fn push_files(&self, paths: Vec<PathBuf>, control: Option<ControlSender>) {
         let Some(serial) = self.shared.state.lock().unwrap().serial.clone() else {
-            log::warn!("no device connected; not pushing files");
-            self.ui.post(UiEvent::Notice("No phone connected".into()));
+            log::warn!("no adb connection; not pushing files");
+            self.ui.post(UiEvent::Notice(
+                "Sending files needs a Developer options (adb) connection".into(),
+            ));
             return;
         };
         let adb = self.adb.clone();
@@ -215,6 +224,10 @@ struct Runner {
     /// Current QR pairing invitation, and whether the UI shows it.
     offer: Option<PairingOffer>,
     offer_shown: bool,
+    /// Companion-app mode (macOS); `None` in headless mode.
+    companion: Option<Companion>,
+    /// Phones whose pairing was declined recently: not asked again for a while.
+    declined: Vec<(String, Instant)>,
 }
 
 impl Runner {
@@ -284,7 +297,20 @@ impl Runner {
     /// One connection, start to end. `Ok` means the stream ended normally
     /// (device unplugged, server stopped).
     fn connect_and_stream(&mut self, sink: &mut dyn VideoSink) -> Result<()> {
-        let serial = self.resolve_device()?;
+        let serial = match self.resolve_device() {
+            Ok(serial) => serial,
+            Err(e) => {
+                // No adb phone: try a phone running the companion app.
+                let no_device = matches!(
+                    e.downcast_ref::<adb::DeviceError>(),
+                    Some(adb::DeviceError::NoDevice)
+                );
+                if no_device && let Some(peer) = self.companion_peer() {
+                    return self.stream_companion(&peer, sink);
+                }
+                return Err(e);
+            }
+        };
         log::info!("using device {serial}");
         self.ui
             .post(UiEvent::Status(format!("Connecting to {serial}…")));
@@ -307,9 +333,7 @@ impl Runner {
             state.sockets = vec![conn.video.try_clone()?, conn.control.try_clone()?];
         }
 
-        let ui = self.ui.clone();
-        let control =
-            controller::start(conn.control, move |text| ui.post(UiEvent::Clipboard(text)))?;
+        let control = controller::start(conn.control, device_message_handler(self.ui.clone()))?;
         self.ui.post(UiEvent::Connected {
             device_name: conn.device_name,
             control: control.clone(),
@@ -346,6 +370,134 @@ impl Runner {
         match result {
             Ok(()) => {
                 log::info!("video stream ended");
+                Ok(())
+            }
+            Err(_) if self.shared.stopping() => Ok(()),
+            Err(e) => Err(e.context("video stream failed")),
+        }
+    }
+
+    /// A companion phone to use: a paired one if visible, else an unpaired
+    /// one that hasn't declined recently.
+    fn companion_peer(&mut self) -> Option<Peer> {
+        let c = self.companion.as_ref()?;
+        let peers = c.discovery.peers();
+        if let Some(p) = peers.iter().find(|p| c.store.get(&p.id).is_some()) {
+            return Some(p.clone());
+        }
+        self.declined
+            .retain(|(_, t)| t.elapsed() < Duration::from_secs(60));
+        peers
+            .into_iter()
+            .find(|p| !self.declined.iter().any(|(id, _)| *id == p.id))
+    }
+
+    /// Companion mode: pair if needed, open the three channels, stream.
+    fn stream_companion(&mut self, peer: &Peer, sink: &mut dyn VideoSink) -> Result<()> {
+        let c = self.companion.clone().expect("companion mode configured");
+        let record = match c.store.get(&peer.id) {
+            Some(r) => r,
+            None => {
+                log::info!(
+                    "pairing with companion app on {} ({})",
+                    peer.name,
+                    peer.addr
+                );
+                let ui = self.ui.clone();
+                let name = peer.name.clone();
+                let shared = self.shared.clone();
+                let result = companion::pair(
+                    &c,
+                    peer,
+                    &|code| {
+                        ui.post(UiEvent::PairingProgress(format!(
+                            "Pairing with the DroidMirror app on {name}.\n\
+                             Check the phone shows {code}, then tap Allow."
+                        )))
+                    },
+                    &|tcp| {
+                        if let Ok(t) = tcp.try_clone() {
+                            shared.state.lock().unwrap().sockets.push(t);
+                        }
+                    },
+                );
+                self.shared.state.lock().unwrap().sockets.clear();
+                match result {
+                    Ok(r) => {
+                        log::info!("paired with {}", peer.name);
+                        r
+                    }
+                    Err(e) => {
+                        if e.downcast_ref::<CompanionError>() == Some(&CompanionError::Denied) {
+                            self.declined.push((peer.id.clone(), Instant::now()));
+                        }
+                        return Err(e.context(format!("pairing with {} failed", peer.name)));
+                    }
+                }
+            }
+        };
+
+        self.ui.post(UiEvent::Status(format!(
+            "Connecting to {} (DroidMirror app)…",
+            peer.name
+        )));
+        let open = |channel| match companion::open(&c, peer, &record, channel) {
+            Err(e) if e.downcast_ref::<CompanionError>() == Some(&CompanionError::UnknownToken) => {
+                // The phone forgot us (app data cleared): pair again next time.
+                let _ = c.store.remove(&peer.id);
+                Err(e)
+            }
+            other => other,
+        };
+        let mut video = open(Channel::Video)?;
+        let mut name = [0u8; crate::protocol::DEVICE_NAME_LEN];
+        video
+            .stream
+            .read_exact(&mut name)
+            .context("no device name from the phone")?;
+        let device_name = parse_device_name(&name);
+        let control_conn = open(Channel::Control)?;
+        let events_conn = open(Channel::Events)?;
+        log::info!("connected to \"{device_name}\" through the companion app");
+
+        {
+            let mut state = self.shared.state.lock().unwrap();
+            if state.stopping {
+                return Ok(());
+            }
+            state.serial = None;
+            state.sockets = vec![
+                video.tcp.try_clone()?,
+                control_conn.tcp.try_clone()?,
+                events_conn.tcp.try_clone()?,
+            ];
+        }
+        let control = controller::start_split(
+            control_conn.stream,
+            events_conn.stream,
+            device_message_handler(self.ui.clone()),
+        )?;
+        self.ui.post(UiEvent::Connected {
+            device_name,
+            control: control.clone(),
+        });
+        let mut events = Events {
+            ui: self.ui.clone(),
+            control: control.clone(),
+        };
+        let result = video::run(video.stream, sink, &mut events, self.config.stats_level);
+
+        control.stop_writer();
+        let mut state = self.shared.state.lock().unwrap();
+        for s in state.sockets.drain(..) {
+            let _ = s.shutdown(Shutdown::Both);
+        }
+        drop(state);
+        self.ui.post(UiEvent::Call(CallState::Idle));
+
+        match result {
+            Ok(()) => {
+                log::info!("companion video stream ended");
                 Ok(())
             }
             Err(_) if self.shared.stopping() => Ok(()),
@@ -500,6 +652,22 @@ impl Runner {
     }
 }
 
+/// Forwards device messages from the control/events stream to the UI.
+fn device_message_handler(ui: Arc<dyn Ui>) -> impl Fn(DeviceMsg) + Send + 'static {
+    move |msg| match msg {
+        DeviceMsg::Clipboard(text) => ui.post(UiEvent::Clipboard(text)),
+        DeviceMsg::CallState { state, number } => {
+            let number = (!number.is_empty()).then_some(number);
+            ui.post(UiEvent::Call(match state {
+                1 => CallState::Ringing { number },
+                2 => CallState::Active,
+                _ => CallState::Idle,
+            }));
+        }
+        other => log::debug!("device message: {other:?}"),
+    }
+}
+
 struct Events {
     ui: Arc<dyn Ui>,
     control: ControlSender,
@@ -512,5 +680,233 @@ impl VideoEvents for Events {
 
     fn send_control(&mut self, msg: ControlMsg) {
         self.control.send(msg);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Companion mode end to end: no adb phone, a fake phone app on the
+    //! network (plain TCP in place of TLS), pairing, three channels, video,
+    //! call state.
+
+    use super::*;
+    use crate::companion::{Discovery, PairingStore, Peer, TlsConn, TlsConnector};
+    use std::io::Write;
+    use std::net::{SocketAddr, TcpListener};
+    use std::sync::mpsc;
+
+    const FP: [u8; 32] = [5; 32];
+
+    struct PlainTls;
+    impl TlsConnector for PlainTls {
+        fn connect(&self, addr: SocketAddr, pin: Option<&[u8; 32]>) -> Result<TlsConn> {
+            if pin.is_some_and(|p| *p != FP) {
+                bail!("pin mismatch");
+            }
+            let tcp = TcpStream::connect(addr)?;
+            Ok(TlsConn {
+                stream: Box::new(tcp.try_clone()?),
+                tcp,
+                fingerprint: FP,
+            })
+        }
+    }
+
+    struct OnePeer(Peer);
+    impl Discovery for OnePeer {
+        fn peers(&self) -> Vec<Peer> {
+            vec![self.0.clone()]
+        }
+    }
+
+    struct Collect(Mutex<mpsc::Sender<String>>);
+    impl Ui for Collect {
+        fn post(&self, e: UiEvent) {
+            let s = match e {
+                UiEvent::Connected { device_name, .. } => format!("connected {device_name}"),
+                UiEvent::VideoSize { width, height } => format!("size {width}x{height}"),
+                UiEvent::Call(c) => format!("call {c:?}"),
+                UiEvent::PairingProgress(p) => format!("progress {p}"),
+                UiEvent::Disconnected => "disconnected".into(),
+                _ => return,
+            };
+            let _ = self.0.lock().unwrap().send(s);
+        }
+    }
+
+    struct CountSink(Arc<Mutex<usize>>);
+    impl VideoSink for CountSink {
+        fn configure(&mut self, _: &[u8], _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn ready(&self) -> bool {
+            true
+        }
+        fn enqueue(&mut self, _: &[u8]) -> Result<()> {
+            *self.0.lock().unwrap() += 1;
+            Ok(())
+        }
+        fn flush(&mut self) {}
+    }
+
+    fn media(config: bool, key: bool, data: &[u8]) -> Vec<u8> {
+        let flags: u64 = if config {
+            1 << 62
+        } else if key {
+            1 << 61
+        } else {
+            0
+        };
+        [
+            flags.to_be_bytes().as_slice(),
+            &(data.len() as u32).to_be_bytes(),
+            data,
+        ]
+        .concat()
+    }
+
+    /// Fake phone app: approves pairing, then serves one session.
+    fn fake_phone() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let token = [3u8; 32];
+            for conn in listener.incoming() {
+                let mut s = conn.unwrap();
+                let mut head = [0u8; 5];
+                if s.read_exact(&mut head).is_err() {
+                    continue;
+                }
+                match head[4] {
+                    3 => {
+                        let mut n = [0u8; 17];
+                        s.read_exact(&mut n).unwrap();
+                        let mut name = vec![0u8; n[16] as usize];
+                        s.read_exact(&mut name).unwrap();
+                        let mut reply = vec![0];
+                        reply.extend_from_slice(&token);
+                        reply.push(5);
+                        reply.extend_from_slice(b"ph-01");
+                        s.write_all(&reply).unwrap();
+                    }
+                    ch => {
+                        let mut t = [0u8; 32];
+                        s.read_exact(&mut t).unwrap();
+                        assert_eq!(t, token, "channel opened with the issued token");
+                        s.write_all(&[0]).unwrap();
+                        thread::spawn(move || match ch {
+                            0 => {
+                                let mut name = [0u8; 64];
+                                name[..7].copy_from_slice(b"RMX3771");
+                                let mut v = name.to_vec();
+                                v.extend_from_slice(b"h264");
+                                v.extend(
+                                    [0x8000_0000u32, 456, 1024]
+                                        .iter()
+                                        .flat_map(|x| x.to_be_bytes()),
+                                );
+                                v.extend(media(
+                                    true,
+                                    false,
+                                    b"\0\0\0\x01\x67\x42\xc0\x1f\0\0\0\x01\x68\xce\x3c\x80",
+                                ));
+                                v.extend(media(false, true, b"\0\0\0\x01\x65\x88"));
+                                v.extend(media(false, false, b"\0\0\0\x01\x41\x9a"));
+                                let _ = s.write_all(&v);
+                                thread::sleep(Duration::from_millis(300));
+                            }
+                            1 => {
+                                let mut buf = [0u8; 64];
+                                while s.read(&mut buf).is_ok_and(|n| n > 0) {}
+                            }
+                            _ => {
+                                let _ = s.write_all(&[100, 1, 0, 0, 0, 0]); // ringing
+                                thread::sleep(Duration::from_millis(500));
+                            }
+                        });
+                    }
+                }
+            }
+        });
+        addr
+    }
+
+    #[test]
+    fn companion_mode_end_to_end() {
+        let dir = std::env::temp_dir().join(format!("dm-session-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let adb_path = dir.join("adb");
+        std::fs::write(
+            &adb_path,
+            "#!/bin/sh\n[ \"$1\" = devices ] && printf 'List of devices attached\\n'\n\
+             [ \"$1\" = mdns ] && printf 'List of discovered mdns services\\n'\nexit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&adb_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let peer = Peer {
+            name: "realme RMX3771".into(),
+            id: "ph-01".into(),
+            addr: fake_phone(),
+        };
+        let store = Arc::new(PairingStore::new(dir.join("pairings")));
+        let companion = Companion {
+            tls: Arc::new(PlainTls),
+            discovery: Arc::new(OnePeer(peer)),
+            store: store.clone(),
+            mac_name: "Test Mac".into(),
+        };
+        let (tx, rx) = mpsc::channel();
+        let frames = Arc::new(Mutex::new(0));
+        let config = Config {
+            serial: None,
+            force_forward: false,
+            tcpip: None,
+            stats_level: log::Level::Debug,
+            call_alerts: false,
+        };
+        let mut session = Session::start(
+            Adb::with_path(adb_path),
+            config,
+            Box::new(CountSink(frames.clone())),
+            Arc::new(Collect(Mutex::new(tx))),
+            Some(companion),
+        )
+        .unwrap();
+
+        let mut seen = Vec::new();
+        while let Ok(e) = rx.recv_timeout(Duration::from_secs(5)) {
+            let done = e == "disconnected";
+            seen.push(e);
+            if done {
+                break;
+            }
+        }
+        session.stop();
+
+        assert!(
+            seen.iter()
+                .any(|e| e.starts_with("progress Pairing with the DroidMirror app")),
+            "{seen:?}"
+        );
+        assert!(seen.contains(&"connected RMX3771".to_owned()), "{seen:?}");
+        assert!(seen.contains(&"size 456x1024".to_owned()), "{seen:?}");
+        assert!(
+            seen.iter().any(|e| e.starts_with("call Ringing")),
+            "{seen:?}"
+        );
+        assert_eq!(
+            *frames.lock().unwrap(),
+            2,
+            "key frame and delta frame displayed"
+        );
+        let record = store.get("ph-01").expect("pairing saved");
+        assert_eq!(record.token, [3; 32]);
+        assert_eq!(record.fingerprint, FP);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -33,6 +33,22 @@ Requirements: Apple Silicon Mac, macOS 14 or later, `adb`.
    cargo run --release
    ```
 
+## Two ways to connect
+
+| | Developer options (adb) | DroidMirror Android app |
+|---|---|---|
+| Setup on the phone | Developer options once, then Wireless debugging | Install the app, allow control once |
+| Each session | Automatic | Tap **Start sharing** (Android asks every time) |
+| Video | scrcpy, best quality | Android screen recording |
+| Typing | Full keyboard | Into the focused text field |
+| Drag on screen | Live | Shown when you release the mouse |
+| Clipboard | Both ways | Mac → phone only (Android blocks the other way) |
+| Send files | Yes | No |
+| Calls | Answer and decline | Answer and decline |
+
+DroidMirror uses adb when a phone is available that way, and the app
+otherwise. Nothing to choose on the Mac.
+
 ## Phone setup (Realme / Realme UI)
 
 You need Developer options once per phone. No cable is needed.
@@ -64,6 +80,26 @@ DroidMirror uses `adb` from your `PATH`, Homebrew
 (`brew install android-platform-tools`) or Android Studio
 (`~/Library/Android/sdk/platform-tools`). Use only one of them: two
 different adb versions keep restarting each other and drop the phone.
+
+### With the DroidMirror app (no Developer options)
+
+1. Install **DroidMirror** on the phone (Google Play; or build it from
+   `android/`, see `android/README.md`) and open it.
+2. **Allow control:** the app explains what it does, then opens
+   Settings → Accessibility; turn on **DroidMirror remote control**.
+3. **Notifications and calls:** tap **Allow** (for pairing requests and
+   call alerts).
+4. **Start sharing** and choose **Entire screen** when Android asks.
+5. Start DroidMirror on the Mac (same Wi-Fi). The first time, the Mac
+   shows a 6-digit code and the phone asks "Pair with <your Mac>?" with the
+   same code: tap **Allow** if they match. After that it connects by
+   itself whenever sharing is on.
+
+The connection is encrypted with TLS. The phone's key lives in the
+Android Keystore, and the Mac pins its certificate after pairing (stored
+in `~/Library/Application Support/DroidMirror/companion-pairings`). The
+6-digit comparison stops anyone else on the network from pairing or
+listening in.
 
 ## Using it
 

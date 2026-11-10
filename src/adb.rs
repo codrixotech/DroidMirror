@@ -116,6 +116,11 @@ impl Adb {
             .context("adb not found. Install it with `brew install android-platform-tools`, or set ADB=/path/to/adb")
     }
 
+    #[cfg(test)]
+    pub fn with_path(exe: PathBuf) -> Self {
+        Self { exe }
+    }
+
     fn cmd(&self, serial: Option<&str>) -> Command {
         let mut c = Command::new(&self.exe);
         if let Some(s) = serial {

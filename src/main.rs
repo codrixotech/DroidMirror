@@ -7,6 +7,7 @@
 
 mod adb;
 mod call;
+mod companion;
 mod controller;
 mod h264;
 mod input;
@@ -17,6 +18,7 @@ mod pairing;
 mod protocol;
 mod server;
 mod session;
+mod sha256;
 mod video;
 
 use std::sync::Arc;
@@ -165,7 +167,7 @@ fn run_headless(config: Config) -> Result<()> {
     let ui = Arc::new(LogUi {
         done: std::sync::Mutex::new(tx),
     });
-    let mut session = Session::start(adb, config, Box::new(video::NullSink), ui)?;
+    let mut session = Session::start(adb, config, Box::new(video::NullSink), ui, None)?;
     let result = rx.recv().unwrap_or(Ok(()));
     session.stop();
     session.join();

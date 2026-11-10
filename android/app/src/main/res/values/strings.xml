@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DroidMirror</string>
+    <string name="accessibility_label">DroidMirror remote control</string>
+    <string name="accessibility_description">Lets your paired Mac tap, swipe, scroll and type on this phone, and press Back, Home and Recent apps. DroidMirror reads only the text field you type into from the Mac and sends nothing anywhere except to your paired Mac, encrypted, on your local network.</string>
+</resources>

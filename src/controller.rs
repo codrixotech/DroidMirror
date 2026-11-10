@@ -1,7 +1,7 @@
-//! Control socket threads: a writer that serializes `ControlMsg`s from a
-//! bounded queue, and a reader for device messages (clipboard).
+//! Control threads: a writer that serializes `ControlMsg`s from a bounded
+//! queue, and a reader for device messages (clipboard, call state).
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread;
@@ -34,28 +34,37 @@ impl ControlSender {
     }
 }
 
-/// Starts the writer and reader threads for a control socket.
+/// Starts the writer and reader threads for a scrcpy control socket.
 pub fn start(
     socket: TcpStream,
-    on_clipboard: impl Fn(String) + Send + 'static,
+    on_message: impl Fn(DeviceMsg) + Send + 'static,
+) -> Result<ControlSender> {
+    let writer = socket.try_clone()?;
+    start_split(Box::new(writer), Box::new(socket), on_message)
+}
+
+/// Same, with separate streams for each direction (companion mode).
+pub fn start_split(
+    writer: Box<dyn Write + Send>,
+    reader: Box<dyn Read + Send>,
+    on_message: impl Fn(DeviceMsg) + Send + 'static,
 ) -> Result<ControlSender> {
     let (tx, rx) = sync_channel(QUEUE_LEN);
-    let writer_socket = socket.try_clone()?;
     thread::Builder::new()
         .name("control-write".into())
-        .spawn(move || write_loop(writer_socket, rx))?;
+        .spawn(move || write_loop(writer, rx))?;
     thread::Builder::new()
         .name("control-read".into())
-        .spawn(move || read_loop(socket, on_clipboard))?;
+        .spawn(move || read_loop(reader, on_message))?;
     Ok(ControlSender(tx))
 }
 
-fn write_loop(mut socket: TcpStream, rx: Receiver<Option<ControlMsg>>) {
+fn write_loop(mut socket: Box<dyn Write + Send>, rx: Receiver<Option<ControlMsg>>) {
     let mut buf = Vec::with_capacity(64);
     while let Ok(Some(msg)) = rx.recv() {
         buf.clear();
         msg.serialize(&mut buf);
-        if let Err(e) = socket.write_all(&buf) {
+        if let Err(e) = socket.write_all(&buf).and_then(|()| socket.flush()) {
             log::debug!("control socket closed: {e}");
             break;
         }
@@ -63,14 +72,13 @@ fn write_loop(mut socket: TcpStream, rx: Receiver<Option<ControlMsg>>) {
 }
 
 /// Device messages must always be read, or the device side blocks.
-fn read_loop(mut socket: TcpStream, on_clipboard: impl Fn(String)) {
+fn read_loop(mut socket: Box<dyn Read + Send>, on_message: impl Fn(DeviceMsg)) {
     loop {
         match device_msg::read(&mut socket) {
-            Ok(Some(DeviceMsg::Clipboard(text))) => on_clipboard(text),
-            Ok(Some(other)) => log::debug!("device message: {other:?}"),
+            Ok(Some(msg)) => on_message(msg),
             Ok(None) => break,
             Err(e) => {
-                log::debug!("control socket read ended: {e}");
+                log::debug!("device message stream ended: {e}");
                 break;
             }
         }
@@ -80,7 +88,6 @@ fn read_loop(mut socket: TcpStream, on_clipboard: impl Fn(String)) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read;
     use std::net::TcpListener;
     use std::sync::mpsc;
 
@@ -91,7 +98,12 @@ mod tests {
         let (mut device, _) = listener.accept().unwrap();
 
         let (clip_tx, clip_rx) = mpsc::channel();
-        let sender = start(client, move |t| clip_tx.send(t).unwrap()).unwrap();
+        let sender = start(client, move |m| {
+            if let DeviceMsg::Clipboard(t) = m {
+                clip_tx.send(t).unwrap();
+            }
+        })
+        .unwrap();
 
         sender.send(ControlMsg::ResetVideo);
         sender.send(ControlMsg::BackOrScreenOn(
@@ -101,7 +113,6 @@ mod tests {
         device.read_exact(&mut got).unwrap();
         assert_eq!(got, [17, 4, 0]);
 
-        use std::io::Write;
         device.write_all(&[0, 0, 0, 0, 2, b'h', b'i']).unwrap();
         assert_eq!(clip_rx.recv().unwrap(), "hi");
 

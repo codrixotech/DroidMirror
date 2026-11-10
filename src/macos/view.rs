@@ -695,9 +695,10 @@ One-time setup on the phone:\n\
 (and Disable permission monitoring, so taps work).\n\
 3. Tap Wireless debugging → Pair device with QR code, and scan:";
 
-const SETUP_FOOTER: &str = "Phone and Mac must be on the same Wi-Fi.\n\
-Already paired? Just turn on Wireless debugging.\n\
-A USB cable with USB debugging on works too.";
+const SETUP_FOOTER: &str = "Phone and Mac must be on the same Wi-Fi. \
+Already paired? Just turn on Wireless debugging.\n\n\
+No Developer options? Install the DroidMirror app from Google Play, \
+open it and tap Start sharing. This Mac will find it.";
 
 impl SetupPanel {
     fn new(mtm: MainThreadMarker) -> Self {

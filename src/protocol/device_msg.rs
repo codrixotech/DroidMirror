@@ -6,6 +6,8 @@ use std::io::{self, Read};
 const TYPE_CLIPBOARD: u8 = 0;
 const TYPE_ACK_CLIPBOARD: u8 = 1;
 const TYPE_UHID_OUTPUT: u8 = 2;
+/// Companion-app extension (not used by scrcpy-server): call state.
+const TYPE_CALL_STATE: u8 = 100;
 
 /// `DeviceMessageWriter.CLIPBOARD_TEXT_MAX_LENGTH`.
 const CLIPBOARD_TEXT_MAX_LEN: usize = (1 << 18) - 5;
@@ -17,6 +19,12 @@ pub enum DeviceMsg {
     AckClipboard(u64),
     /// HID output report; unused (we don't create UHID devices).
     UhidOutput,
+    /// Companion app only: 0 idle, 1 ringing, 2 in a call, plus the
+    /// caller's number when the phone shares it.
+    CallState {
+        state: u8,
+        number: String,
+    },
 }
 
 /// Reads one message; `Ok(None)` on a clean end of stream.
@@ -50,6 +58,20 @@ pub fn read(r: &mut impl Read) -> io::Result<Option<DeviceMsg>> {
             let size = u16::from_be_bytes([head[2], head[3]]) as u64;
             io::copy(&mut r.take(size), &mut io::sink())?;
             Ok(Some(DeviceMsg::UhidOutput))
+        }
+        TYPE_CALL_STATE => {
+            let mut state = [0u8; 1];
+            r.read_exact(&mut state)?;
+            let len = read_u32(r)? as usize;
+            if len > 256 {
+                return Err(invalid(format!("number length {len} too large")));
+            }
+            let mut buf = vec![0u8; len];
+            r.read_exact(&mut buf)?;
+            Ok(Some(DeviceMsg::CallState {
+                state: state[0],
+                number: String::from_utf8_lossy(&buf).into_owned(),
+            }))
         }
         other => Err(invalid(format!("unknown device message type {other}"))),
     }
@@ -87,6 +109,19 @@ mod tests {
         );
         assert_eq!(read(&mut r).unwrap(), Some(DeviceMsg::UhidOutput));
         assert_eq!(read(&mut r).unwrap(), None);
+    }
+
+    #[test]
+    fn parses_companion_call_state() {
+        let mut wire = vec![100, 1, 0, 0, 0, 3];
+        wire.extend_from_slice(b"123");
+        assert_eq!(
+            read(&mut &wire[..]).unwrap(),
+            Some(DeviceMsg::CallState {
+                state: 1,
+                number: "123".into()
+            })
+        );
     }
 
     #[test]
