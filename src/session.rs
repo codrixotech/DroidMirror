@@ -34,6 +34,8 @@ pub enum UiEvent {
     Clipboard(String),
     /// Unrecoverable; the session has stopped.
     Fatal(String),
+    /// Brief message (file transfers).
+    Notice(String),
 }
 
 pub trait Ui: Send + Sync + 'static {
@@ -89,6 +91,7 @@ impl Shared {
 pub struct Session {
     shared: Arc<Shared>,
     adb: Adb,
+    ui: Arc<dyn Ui>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -104,7 +107,7 @@ impl Session {
             adb: adb.clone(),
             config,
             shared: shared.clone(),
-            ui,
+            ui: ui.clone(),
             wireless_addr: None,
         };
         let thread = thread::Builder::new()
@@ -113,6 +116,7 @@ impl Session {
         Ok(Self {
             shared,
             adb,
+            ui,
             thread: Some(thread),
         })
     }
@@ -145,25 +149,40 @@ impl Session {
     pub fn push_files(&self, paths: Vec<PathBuf>, control: Option<ControlSender>) {
         let Some(serial) = self.shared.state.lock().unwrap().serial.clone() else {
             log::warn!("no device connected; not pushing files");
+            self.ui.post(UiEvent::Notice("No phone connected".into()));
             return;
         };
         let adb = self.adb.clone();
+        let ui = self.ui.clone();
         let spawned = thread::Builder::new().name("push".into()).spawn(move || {
+            let total = paths.len();
+            let mut sent = 0;
             for path in paths {
                 let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                     continue;
                 };
+                ui.post(UiEvent::Notice(format!("Sending {name}…")));
                 let remote = format!("/sdcard/Download/{name}");
                 match adb.push(&serial, &path, &remote) {
                     Ok(()) => {
                         log::info!("pushed {} to {remote}", path.display());
+                        sent += 1;
                         if let Some(c) = &control {
                             c.send(ControlMsg::ScanFile(remote));
                         }
                     }
-                    Err(e) => log::error!("could not push {}: {e:#}", path.display()),
+                    Err(e) => {
+                        log::error!("could not push {}: {e:#}", path.display());
+                        ui.post(UiEvent::Notice(format!("Couldn't send {name}: {e:#}")));
+                        return;
+                    }
                 }
             }
+            ui.post(UiEvent::Notice(if total == 1 {
+                "Saved to Download".to_owned()
+            } else {
+                format!("Saved {sent} files to Download")
+            }));
         });
         if let Err(e) = spawned {
             log::error!("could not start push thread: {e}");

@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
+use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSEvent,
     NSFont, NSPasteboardTypeFileURL, NSResponder, NSTextAlignment, NSTextField, NSView, NSWindow,
@@ -15,8 +15,8 @@ use objc2_app_kit::{
 };
 use objc2_av_foundation::AVSampleBufferDisplayLayer;
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL,
-    ns_string,
+    MainThreadMarker, NSArray, NSObject, NSObjectNSDelayedPerforming, NSObjectProtocol, NSPoint,
+    NSRect, NSSize, NSString, NSURL, ns_string,
 };
 use objc2_quartz_core::CATransaction;
 
@@ -86,6 +86,8 @@ type DropHandler = Rc<dyn Fn(Vec<PathBuf>)>;
 pub struct ViewIvars {
     video_layer: Retained<AVSampleBufferDisplayLayer>,
     status: Retained<NSTextField>,
+    /// Short-lived message at the bottom (file transfers).
+    toast: Retained<NSTextField>,
     input: RefCell<InputState>,
     on_drop: RefCell<Option<DropHandler>>,
 }
@@ -247,39 +249,62 @@ define_class!(
     unsafe impl NSDraggingDestination for MirrorView {
         #[unsafe(method(draggingEntered:))]
         fn dragging_entered(&self, _sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+            log::debug!("drag entered");
             NSDragOperation::Copy
         }
 
         #[unsafe(method(performDragOperation:))]
         fn perform_drag_operation(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
             let paths = dropped_paths(sender);
+            log::info!("dropped: {paths:?}");
             let callback = self.ivars().on_drop.borrow().clone();
             match callback {
                 Some(cb) if !paths.is_empty() => {
                     cb(paths);
                     true
                 }
-                _ => false,
+                _ => {
+                    self.show_toast("Can't send this item. Drag files from Finder.");
+                    false
+                }
             }
+        }
+    }
+
+    impl MirrorView {
+        #[unsafe(method(hideToast))]
+        fn hide_toast(&self) {
+            self.ivars().toast.setHidden(true);
         }
     }
 );
 
 /// File paths from a drag, via the `public.file-url` string of each item.
+/// Finder provides file *reference* URLs (`file:///.file/id=...`), which
+/// must be resolved with `filePathURL` before taking the path.
 fn dropped_paths(sender: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<PathBuf> {
     // SAFETY: reading an immutable AppKit constant.
     let ty = unsafe { NSPasteboardTypeFileURL };
-    let items = sender.draggingPasteboard().pasteboardItems();
-    let Some(items) = items else {
+    let pasteboard = sender.draggingPasteboard();
+    let Some(items) = pasteboard.pasteboardItems() else {
         return Vec::new();
     };
-    items
+    let paths: Vec<PathBuf> = items
         .iter()
         .filter_map(|item| item.stringForType(ty))
         .filter_map(|s| NSURL::URLWithString(&s))
+        .filter_map(|url| url.filePathURL())
         .filter_map(|url| url.path())
         .map(|p| PathBuf::from(p.to_string()))
-        .collect()
+        .collect();
+    if paths.is_empty() {
+        let types: Vec<String> = pasteboard
+            .types()
+            .map(|t| t.iter().map(|t| t.to_string()).collect())
+            .unwrap_or_default();
+        log::warn!("drop contained no files; pasteboard types: {types:?}");
+    }
+    paths
 }
 
 impl MirrorView {
@@ -291,9 +316,19 @@ impl MirrorView {
         status.setFont(Some(&NSFont::systemFontOfSize(14.0)));
         status.setSelectable(false);
 
+        let toast = NSTextField::wrappingLabelWithString(ns_string!(""), mtm);
+        toast.setTextColor(Some(&NSColor::whiteColor()));
+        toast.setAlignment(NSTextAlignment::Center);
+        toast.setFont(Some(&NSFont::systemFontOfSize(12.0)));
+        toast.setDrawsBackground(true);
+        toast.setBackgroundColor(Some(&NSColor::colorWithWhite_alpha(0.0, 0.75)));
+        toast.setSelectable(false);
+        toast.setHidden(true);
+
         let this = Self::alloc(mtm).set_ivars(ViewIvars {
             video_layer,
             status,
+            toast,
             input: RefCell::default(),
             on_drop: RefCell::new(None),
         });
@@ -309,6 +344,7 @@ impl MirrorView {
         }
         this.ivars().video_layer.setMasksToBounds(true);
         this.addSubview(&this.ivars().status);
+        this.addSubview(&this.ivars().toast);
 
         // SAFETY: reading an immutable AppKit constant.
         let file_url = unsafe { NSPasteboardTypeFileURL };
@@ -344,6 +380,25 @@ impl MirrorView {
         status.setHidden(false);
         self.ivars().video_layer.setOpacity(0.3);
         self.layout_contents();
+    }
+
+    /// Shows a message at the bottom for a few seconds.
+    pub fn show_toast(&self, text: &str) {
+        let toast = &self.ivars().toast;
+        toast.setStringValue(&NSString::from_str(text));
+        toast.setHidden(false);
+        self.layout_contents();
+        // One-shot delayed call (not a repeating timer); a newer toast
+        // cancels the pending hide of the previous one.
+        // SAFETY: `hideToast` is defined on this class and takes no argument.
+        unsafe {
+            NSObject::cancelPreviousPerformRequestsWithTarget_selector_object(
+                self.as_ref(),
+                sel!(hideToast),
+                None,
+            );
+            self.performSelector_withObject_afterDelay(sel!(hideToast), None, 3.0);
+        }
     }
 
     pub fn hide_status(&self) {
@@ -393,6 +448,17 @@ impl MirrorView {
                 inner.y + (inner.h - h) / 2.0,
             ),
             NSSize::new(max_w, h),
+        ));
+
+        let toast = &self.ivars().toast;
+        toast.setPreferredMaxLayoutWidth(max_w);
+        let th = toast.fittingSize().height + 8.0;
+        toast.setFrame(NSRect::new(
+            NSPoint::new(
+                inner.x + (inner.w - max_w) / 2.0,
+                inner.y + inner.h - th - 24.0,
+            ),
+            NSSize::new(max_w, th),
         ));
     }
 

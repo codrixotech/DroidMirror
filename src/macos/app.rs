@@ -379,6 +379,7 @@ impl AppDelegate {
                 }
             }
             UiEvent::Fatal(text) => view.show_status(&text),
+            UiEvent::Notice(text) => view.show_toast(&text),
         }
     }
 

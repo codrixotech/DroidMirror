@@ -141,6 +141,7 @@ impl Ui for LogUi {
             UiEvent::Disconnected => done(Ok(())),
             UiEvent::Clipboard(t) => log::info!("device clipboard: {} bytes", t.len()),
             UiEvent::Fatal(e) => done(Err(e)),
+            UiEvent::Notice(n) => log::info!("{n}"),
         }
     }
 }
