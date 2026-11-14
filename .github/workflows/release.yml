@@ -1,6 +1,8 @@
 name: Release
 
-# Push a tag like v0.1.0 to build signed packages and create a draft release.
+# Builds signed packages and creates a draft release, either by pushing a
+# tag like v0.1.0, or from the Actions tab: Release → Run workflow → enter
+# the tag (it is created on the selected branch's latest commit).
 #
 # Optional repository secrets (without them, builds are ad-hoc / debug signed):
 #   macOS:   MACOS_CERTIFICATE (base64 .p12 of a "Developer ID Application"
@@ -12,6 +14,14 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create, e.g. v0.1.0'
+        required: true
+
+env:
+  TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 permissions:
   contents: read
@@ -23,7 +33,7 @@ jobs:
       MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
     steps:
       - uses: actions/checkout@v4
-      - run: ./scripts/check-version.sh "$GITHUB_REF_NAME"
+      - run: ./scripts/check-version.sh "$TAG"
       - uses: dtolnay/rust-toolchain@stable
       - name: Import signing certificate
         if: env.MACOS_CERTIFICATE != ''
@@ -109,5 +119,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -la artifacts
-          gh release create "$GITHUB_REF_NAME" artifacts/* --repo "$GITHUB_REPOSITORY" \
-            --draft --generate-notes --title "DroidMirror ${GITHUB_REF_NAME#v}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            # Creates the tag on this commit if it doesn't exist yet.
+            gh release create "$TAG" artifacts/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --draft --generate-notes --title "DroidMirror ${TAG#v}"
+          fi
