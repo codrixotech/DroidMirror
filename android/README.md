@@ -28,8 +28,21 @@ From a terminal (needs the Android SDK; `ANDROID_HOME` or a
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-The APK is `app/build/outputs/apk/debug/app-debug.apk`. Install it with
-`adb install`, or copy it to the phone and open it.
+The APK is `app/build/outputs/apk/debug/app-debug.apk`. Install it with:
+
+```bash
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+Opening a sideloaded APK on the phone usually gets blocked by Google Play
+Protect, because Accessibility control plus screen capture is a pattern
+also used by remote-access scams. `adb install` (or Run in Android Studio)
+isn't blocked, and also avoids Android's "Restricted setting" prompt for
+the Accessibility service. Regular users should get the app from Google
+Play.
+
+After installing or updating, check that **Settings → Accessibility →
+DroidMirror remote control** is on (updates can switch it off).
 
 ## Release signing
 

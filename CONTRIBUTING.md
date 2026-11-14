@@ -28,6 +28,12 @@ cargo run --release
 Android app: open `android/` in Android Studio, or see
 [android/README.md](android/README.md).
 
+## Testing on real devices
+
+Unit tests can't cover video, input or phone permissions. Before a
+release (or for changes in those areas), go through
+[docs/TESTING.md](docs/TESTING.md) on a real phone.
+
 ## Before sending a pull request
 
 ```bash

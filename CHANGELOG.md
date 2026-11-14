@@ -14,4 +14,10 @@ First public release.
 - Incoming-call alerts with Answer / Decline.
 - Companion Android app for phones without Developer options: screen
   sharing, control through an Accessibility service, encrypted and paired
-  connection.
+  connection. The Mac says so when the phone's Accessibility service isn't
+  running.
+- macOS app bundle and .dmg, log file (Help → Show Log File), CI and
+  release automation.
+
+Tested on a realme RMX3771 (Android 15) with an Apple Silicon Mac: both
+modes, mirroring, control, clipboard and calls.

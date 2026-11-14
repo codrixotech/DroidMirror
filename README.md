@@ -15,9 +15,10 @@ window, like iPhone Mirroring.
 - **Calls:** incoming calls pop up on the Mac with Answer and Decline.
 - **No Developer options?** Use the DroidMirror Android app instead.
 
-> **Status: beta.** Tested on a realme phone with Android 15. Please
-> [report](https://github.com/codrixotech/DroidMirror/issues) how it works
-> on yours.
+> **Status: beta.** Tested on a realme phone (Android 15) with an Apple
+> Silicon Mac, in both modes: mirroring, control, clipboard and calls.
+> Please [report](https://github.com/codrixotech/DroidMirror/issues) how it
+> works on your phone.
 
 ## Requirements
 
@@ -81,9 +82,12 @@ accept "Allow USB debugging?".
 
 ### B. With the DroidMirror Android app
 
-1. Install **DroidMirror** on the phone (the APK from
-   [Releases](https://github.com/codrixotech/DroidMirror/releases); Google
-   Play listing coming).
+1. Install **DroidMirror** on the phone. A Google Play listing is coming;
+   until then, testers can install the APK from
+   [Releases](https://github.com/codrixotech/DroidMirror/releases). Google
+   Play Protect often blocks sideloaded apps that use Accessibility
+   control; if it does, install the APK with adb instead (needs Developer
+   options once): `adb install -r DroidMirror-<version>-android.apk`.
 2. Open it and follow the three steps: **Allow control** (turns on its
    Accessibility service), **Allow** notifications and calls, then
    **Start sharing** and choose **Entire screen**.
@@ -130,6 +134,12 @@ If the connection drops, DroidMirror says so and reconnects by itself.
 - **The Mac doesn't find the phone over Wi-Fi:** check both are on the
   same network, and that DroidMirror is allowed in **System Settings →
   Privacy & Security → Local Network**.
+- **Companion app: video works but clicks and typing do nothing:** the
+  app's Accessibility service isn't running. On the phone, open **Settings
+  → Accessibility** (on realme: Settings → Additional settings →
+  Accessibility → Downloaded apps) and turn **DroidMirror remote control**
+  on, or off and on again if it already shows as on. The Mac also shows a
+  message when this happens.
 - **Companion app: "Restricted setting" when turning on control:** this
   happens with APKs not installed from Google Play. Open **Settings → Apps →
   DroidMirror → ⋮ → Allow restricted settings**, then try again.
@@ -176,7 +186,8 @@ Android app: see [android/README.md](android/README.md).
 
 More: [architecture and protocols](docs/ARCHITECTURE.md),
 [contributing](CONTRIBUTING.md), [security](SECURITY.md),
-[privacy](PRIVACY.md), [changelog](CHANGELOG.md).
+[privacy](PRIVACY.md), [changelog](CHANGELOG.md),
+[release test checklist](docs/TESTING.md).
 
 ## License
 
