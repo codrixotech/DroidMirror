@@ -2,6 +2,17 @@ plugins {
     id 'com.android.application'
 }
 
+// Release signing: from android/keystore.properties (never committed) or,
+// in CI, from environment variables. Without either, release builds are
+// unsigned (fine for Play's upload flow you sign later, not for installing).
+def keystoreProps = new Properties()
+def keystoreFile = rootProject.file('keystore.properties')
+if (keystoreFile.exists()) {
+    keystoreFile.withInputStream { keystoreProps.load(it) }
+}
+def signingValue = { String prop, String env -> keystoreProps.getProperty(prop) ?: System.getenv(env) }
+def releaseStoreFile = signingValue('storeFile', 'ANDROID_KEYSTORE_FILE')
+
 android {
     namespace 'com.codrixo.droidmirror'
     compileSdk 36
@@ -14,8 +25,22 @@ android {
         versionName '0.1.0'
     }
 
+    signingConfigs {
+        release {
+            if (releaseStoreFile) {
+                storeFile file(releaseStoreFile)
+                storePassword signingValue('storePassword', 'ANDROID_KEYSTORE_PASSWORD')
+                keyAlias signingValue('keyAlias', 'ANDROID_KEY_ALIAS')
+                keyPassword signingValue('keyPassword', 'ANDROID_KEY_PASSWORD')
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (releaseStoreFile) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')

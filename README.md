@@ -1,111 +1,102 @@
 # DroidMirror
 
-A lightweight native macOS app that mirrors and controls an Android phone,
-in the spirit of iPhone Mirroring. Written in Rust, no webview, no FFmpeg,
-no GUI framework: H.264 from the phone goes straight into a
-hardware-decoded `AVSampleBufferDisplayLayer` in a plain `NSWindow`.
+See and control your Android phone from your Mac, in a phone-shaped
+window, like iPhone Mirroring.
 
-It reuses the official [scrcpy](https://github.com/Genymobile/scrcpy)
-server (Apache 2.0) on the phone. The client is pinned to **scrcpy-server
-5.0.1**; see `scrcpy-server.lock`.
+[![CI](https://github.com/codrixotech/DroidMirror/actions/workflows/ci.yml/badge.svg)](https://github.com/codrixotech/DroidMirror/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-Requirements: Apple Silicon Mac, macOS 14 or later, `adb`.
+- **Native and light:** a Rust + AppKit app with hardware video decoding.
+  About 17 MB of memory while mirroring. No Electron, no FFmpeg.
+- **Wi-Fi without a cable:** scan a QR code once; after that DroidMirror
+  finds your phone by itself.
+- **Full control:** click, swipe, scroll, type; Back, Home and Recent apps
+  shortcuts; clipboard sync; drop files onto the phone.
+- **Calls:** incoming calls pop up on the Mac with Answer and Decline.
+- **No Developer options?** Use the DroidMirror Android app instead.
 
-## Mac setup
+> **Status: beta.** Tested on a realme phone with Android 15. Please
+> [report](https://github.com/codrixotech/DroidMirror/issues) how it works
+> on yours.
 
-1. Install Rust: <https://rustup.rs>
-2. Install adb (DroidMirror shells out to it):
+## Requirements
+
+- A Mac with Apple Silicon, macOS 14 Sonoma or later.
+- An Android phone: Android 11+ for Wi-Fi pairing, Android 12+ for the
+  companion app (USB works with older versions).
+- The phone and the Mac on the same Wi-Fi network (for wireless use).
+
+## Install
+
+1. Download `DroidMirror-<version>-macos-arm64.dmg` from
+   [Releases](https://github.com/codrixotech/DroidMirror/releases), open it
+   and drag **DroidMirror** to **Applications**.
+2. Open DroidMirror. If macOS says it can't verify the developer, open
+   **System Settings → Privacy & Security** and click **Open Anyway**
+   (only needed for builds that aren't notarized).
+3. When macOS asks whether DroidMirror may find devices on your local
+   network, click **Allow**.
+
+Then connect your phone in one of two ways:
+
+| | A. Developer options (recommended) | B. DroidMirror Android app |
+|---|---|---|
+| One-time setup | Turn on Developer options; install adb on the Mac | Install the app; allow control once |
+| Each session | Automatic | Tap **Start sharing** on the phone |
+| Video | Best (scrcpy) | Good (Android screen recording) |
+| Typing | Full keyboard | Into the focused text field |
+| Drag on screen | Live | Shown when you release the mouse |
+| Clipboard | Both ways | Mac → phone |
+| Drop files | Yes | No |
+| Calls | Answer / decline | Answer / decline |
+
+DroidMirror picks the method automatically: Developer options when
+available, the app otherwise.
+
+### A. With Developer options
+
+1. On the Mac, install adb:
 
    ```bash
    brew install android-platform-tools
    ```
 
-3. Fetch and verify the pinned scrcpy-server (the build refuses to run
-   without it, or if its SHA-256 doesn't match):
+   (If you use Android Studio, its adb works too. Use only one: two
+   different adb versions keep disconnecting each other.)
+2. On the phone: **Settings → About phone → Version** (or Software
+   information) → tap **Build number** 7 times.
+3. **Settings → Developer options** (on realme: Settings → Additional
+   settings → Developer options): turn on **Wireless debugging**.
+   On realme / OPPO / OnePlus phones, also turn on **Disable permission
+   monitoring**, or taps and typing won't work.
+4. Open DroidMirror on the Mac. It shows a QR code. On the phone, tap
+   **Wireless debugging → Pair device with QR code** and scan it.
 
-   ```bash
-   ./scripts/fetch-server.sh
-   ```
+That's it: next time, just open DroidMirror. If Android has switched
+Wireless debugging off (after a restart or a Wi-Fi change), switch it back
+on; there's no need to pair again.
 
-4. Build and run:
+**Over USB instead:** turn on **USB debugging**, plug the phone in and
+accept "Allow USB debugging?".
 
-   ```bash
-   cargo run --release
-   ```
+### B. With the DroidMirror Android app
 
-## Two ways to connect
+1. Install **DroidMirror** on the phone (the APK from
+   [Releases](https://github.com/codrixotech/DroidMirror/releases); Google
+   Play listing coming).
+2. Open it and follow the three steps: **Allow control** (turns on its
+   Accessibility service), **Allow** notifications and calls, then
+   **Start sharing** and choose **Entire screen**.
+3. Open DroidMirror on the Mac. The first time, both devices show the same
+   6-digit code: tap **Allow** on the phone if they match.
 
-| | Developer options (adb) | DroidMirror Android app |
-|---|---|---|
-| Setup on the phone | Developer options once, then Wireless debugging | Install the app, allow control once |
-| Each session | Automatic | Tap **Start sharing** (Android asks every time) |
-| Video | scrcpy, best quality | Android screen recording |
-| Typing | Full keyboard | Into the focused text field |
-| Drag on screen | Live | Shown when you release the mouse |
-| Clipboard | Both ways | Mac → phone only (Android blocks the other way) |
-| Send files | Yes | No |
-| Calls | Answer and decline | Answer and decline |
-
-DroidMirror uses adb when a phone is available that way, and the app
-otherwise. Nothing to choose on the Mac.
-
-## Phone setup (Realme / Realme UI)
-
-You need Developer options once per phone. No cable is needed.
-
-### Over Wi-Fi (recommended)
-
-1. **Enable Developer options:** Settings → About device (or About phone)
-   → Version → tap **Build number** 7 times, entering your PIN if asked.
-2. Settings → Additional settings → **Developer options**: turn on
-   **Wireless debugging** and **Disable permission monitoring** (Realme UI
-   blocks taps and typing from the Mac without it).
-3. Start DroidMirror. With no phone connected, it shows a **QR code**.
-4. On the phone, tap **Wireless debugging → Pair device with QR code** and
-   scan it. DroidMirror pairs, connects and starts mirroring.
-
-The phone and the Mac must be on the same Wi-Fi network. After pairing,
-DroidMirror finds the phone by itself every time; if Android has switched
-Wireless debugging off (after a restart or a Wi-Fi change), switch it
-back on and it reconnects. There's no need to pair again.
-
-### Over USB
-
-Turn on **USB debugging** in Developer options instead, plug the phone in
-and accept the "Allow USB debugging?" prompt.
-
-### If adb isn't found
-
-DroidMirror uses `adb` from your `PATH`, Homebrew
-(`brew install android-platform-tools`) or Android Studio
-(`~/Library/Android/sdk/platform-tools`). Use only one of them: two
-different adb versions keep restarting each other and drop the phone.
-
-### With the DroidMirror app (no Developer options)
-
-1. Install **DroidMirror** on the phone (Google Play; or build it from
-   `android/`, see `android/README.md`) and open it.
-2. **Allow control:** the app explains what it does, then opens
-   Settings → Accessibility; turn on **DroidMirror remote control**.
-3. **Notifications and calls:** tap **Allow** (for pairing requests and
-   call alerts).
-4. **Start sharing** and choose **Entire screen** when Android asks.
-5. Start DroidMirror on the Mac (same Wi-Fi). The first time, the Mac
-   shows a 6-digit code and the phone asks "Pair with <your Mac>?" with the
-   same code: tap **Allow** if they match. After that it connects by
-   itself whenever sharing is on.
-
-The connection is encrypted with TLS. The phone's key lives in the
-Android Keystore, and the Mac pins its certificate after pairing (stored
-in `~/Library/Application Support/DroidMirror/companion-pairings`). The
-6-digit comparison stops anyone else on the network from pairing or
-listening in.
+After that, the Mac connects whenever sharing is on. Android asks for
+screen-sharing permission each time you start sharing.
 
 ## Using it
 
-The window is shaped like the phone. Drag it by its dark border; resize
-it from the edges (the aspect ratio is kept). It follows the phone's
-rotation.
+Drag the window by its dark border; resize it from the edges. It follows
+the phone's rotation.
 
 | Mac | Phone |
 |---|---|
@@ -118,93 +109,81 @@ rotation.
 | Cmd+S | Recent apps |
 | Cmd+C | Copy on the phone, into the Mac clipboard |
 | Cmd+V | Paste the Mac clipboard on the phone |
-| Drop files (from Finder) on the window | Copied to `/sdcard/Download` |
+| Drop files from Finder | Copied to the phone's Download folder |
 | Cmd+Return or **Answer** | Answer an incoming call |
 | Cmd+Delete or **Decline** / **End** | Decline or end a call |
-| Cmd+Q | Quit (stops the server on the phone) |
+| Cmd+Q | Quit |
 
-The phone's clipboard is copied to the Mac whenever it changes; the Mac
-clipboard is sent to the phone when you switch back to DroidMirror.
+**Calls** are answered on the phone: the audio stays on the phone (tap the
+speaker button on the mirrored screen to talk hands-free). Using the Mac's
+microphone and speakers for calls isn't possible.
 
-If the phone is unplugged, the window says so and reconnects by itself
-when it comes back.
+If the connection drops, DroidMirror says so and reconnects by itself.
 
-### Phone calls
+## Troubleshooting
 
-When a call comes in, the window comes to the front, the Dock icon
-bounces, and a banner shows **Answer** and **Decline**. Answering from the
-Mac picks up the call **on the phone**: the audio stays on the phone (tap
-the speaker button on the mirrored screen to talk hands-free). Using the
-Mac's microphone and speakers for the call isn't possible over adb.
+- **Video works but taps and typing don't (realme / OPPO / OnePlus):** turn
+  on **Disable permission monitoring** in Developer options, then
+  reconnect.
+- **"Several devices are connected":** run DroidMirror with
+  `--serial SERIAL` (see `adb devices`).
+- **The Mac doesn't find the phone over Wi-Fi:** check both are on the
+  same network, and that DroidMirror is allowed in **System Settings →
+  Privacy & Security → Local Network**.
+- **Companion app: "Restricted setting" when turning on control:** this
+  happens with APKs not installed from Google Play. Open **Settings → Apps →
+  DroidMirror → ⋮ → Allow restricted settings**, then try again.
+- **Logs for bug reports:** **Help → Show Log File** in DroidMirror.
 
-Call state is read with `adb shell dumpsys telephony.registry` once a
-second while connected. Recent Android versions hide the caller's number
-there, so the banner may just say "Incoming call"; the caller's name is
-visible on the mirrored screen. Turn this off with `--no-call-alerts`.
+### Command-line options
 
-### Options
+Run `/Applications/DroidMirror.app/Contents/MacOS/DroidMirror --help`:
 
 ```text
 -s, --serial SERIAL      device to use when several are connected
-    --tcpip[=IP[:PORT]]  connect over Wi-Fi (see below)
+    --tcpip[=IP[:PORT]]  connect over Wi-Fi (switch a USB device, or an address)
     --forward            use `adb forward` instead of `adb reverse`
     --headless           no window: log video packet rate and bitrate only
     --no-call-alerts     don't watch for incoming calls
 ```
 
-Environment: `DROIDMIRROR_LOG=debug` for verbose logs (including video
-throughput once per second), `ADB=/path/to/adb` if adb is not found.
+Environment: `DROIDMIRROR_LOG=debug` for verbose logs, `ADB=/path/to/adb`
+if adb isn't found.
 
-### Wireless options
+## Building from source
 
-QR pairing (above) covers most cases. Also available:
-
-- `--tcpip` with the phone plugged in by USB switches it to network adb
-  (`adb tcpip 5555`), connects to its Wi-Fi address, and then you can
-  unplug the cable (useful on Android 10 and older).
-- `--tcpip=IP:PORT` connects to a specific address.
-
-## Measuring memory
-
-While mirroring:
+Mac app (Rust stable, Xcode command line tools):
 
 ```bash
-footprint $(pgrep -x droidmirror)
+./scripts/fetch-server.sh
 ```
 
-The target is under 50 MB for the app process.
+```bash
+cargo run --release
+```
 
-## How it works
+The first command downloads the pinned scrcpy-server and checks its
+SHA-256; the build refuses to run without it.
 
-- `adb push` the embedded server, `adb reverse` a local port (falling back
-  to `adb forward`), start it with `app_process`, then open the video and
-  control sockets. Server arguments: `video_codec=h264 max_size=1024
-  video_bit_rate=3000000 max_fps=30 audio=false control=true`.
-- **Video thread:** reads the socket continuously, converts Annex B to
-  AVCC, builds a `CMVideoFormatDescription` from SPS/PPS (rebuilt when they
-  change, e.g. on rotation), wraps each frame in a `CMSampleBuffer` marked
-  *display immediately* and enqueues it on the layer's
-  `sampleBufferRenderer`, which Apple documents as safe to feed from a
-  background thread. If the renderer falls behind, frames are dropped
-  until the next key frame and `RESET_VIDEO` (at most once a second) asks
-  the phone for one, so nothing piles up on either side.
-- **Main thread:** AppKit and input. Background threads wake it through a
-  `CFRunLoopSource` (event-driven, no timers).
-- **Control threads:** one writes control messages from a bounded queue,
-  one reads device messages (clipboard).
-- All unsafe FFI is in `src/macos/`.
+To build `DroidMirror.app` and a `.dmg` (optionally signed and notarized,
+see the script):
 
-## Updating the pinned server
+```bash
+./scripts/package-macos.sh
+```
 
-The client protocol is written against one exact server version, and the
-server refuses to start when the versions differ. To move to a new scrcpy
-release, update `version` and `sha256` in `scrcpy-server.lock` (the
-checksum is listed in that release's `doc/build.md`), re-check the
-protocol code against the new server source, then rerun
-`./scripts/fetch-server.sh`.
+Android app: see [android/README.md](android/README.md).
+
+More: [architecture and protocols](docs/ARCHITECTURE.md),
+[contributing](CONTRIBUTING.md), [security](SECURITY.md),
+[privacy](PRIVACY.md), [changelog](CHANGELOG.md).
 
 ## License
 
-DroidMirror is Apache-2.0. scrcpy-server is Copyright Genymobile and
-Romain Vimont, Apache-2.0; it is downloaded at build time, not
-redistributed in this repository.
+Apache License 2.0, see [LICENSE](LICENSE). The Mac app embeds
+[scrcpy-server](https://github.com/Genymobile/scrcpy) (Apache 2.0, Copyright
+Genymobile and Romain Vimont), see [NOTICE](NOTICE).
+
+DroidMirror is an independent project, not affiliated with or endorsed by
+Genymobile, Google or Apple. Android is a trademark of Google LLC; Mac and
+iPhone are trademarks of Apple Inc.

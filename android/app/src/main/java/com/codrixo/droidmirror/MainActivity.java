@@ -28,6 +28,8 @@ import java.util.List;
 public final class MainActivity extends Activity implements MirrorService.Listener {
     private static final int REQUEST_CAPTURE = 1;
     private static final int REQUEST_PERMISSIONS = 2;
+    private static final String PROJECT_URL = "https://github.com/codrixotech/DroidMirror";
+    private static final String PRIVACY_URL = PROJECT_URL + "/blob/main/PRIVACY.md";
 
     private TextView controlStatus;
     private Button controlButton;
@@ -77,6 +79,12 @@ public final class MainActivity extends Activity implements MirrorService.Listen
             refresh();
         });
         root.addView(forgetButton);
+
+        root.addView(heading("About"));
+        root.addView(text("DroidMirror is free and open source. Your screen and input go only to "
+                + "your paired Mac, encrypted, on your local network.", 14, false));
+        root.addView(button("Privacy policy", v -> openUrl(PRIVACY_URL)));
+        root.addView(button("Source code and help", v -> openUrl(PROJECT_URL)));
 
         ScrollView scroll = new ScrollView(this);
         scroll.addView(root);
@@ -245,6 +253,14 @@ public final class MainActivity extends Activity implements MirrorService.Listen
     }
 
     // --- small view helpers -------------------------------------------------------
+
+    private void openUrl(String url) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)));
+        } catch (android.content.ActivityNotFoundException e) {
+            // no browser installed
+        }
+    }
 
     private int dp(int v) {
         return Math.round(v * getResources().getDisplayMetrics().density);

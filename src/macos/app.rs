@@ -166,6 +166,20 @@ define_class!(
         }
 
         /// Cmd+V: paste the Mac clipboard on the phone.
+        /// Help → Show Log File: reveal it in Finder (for bug reports).
+        #[unsafe(method(showLog:))]
+        fn show_log(&self, _sender: Option<&AnyObject>) {
+            if let Some(path) = crate::logger::log_path() {
+                let target = if path.exists() { path } else { path.parent().unwrap_or(&path).to_path_buf() };
+                open(&["-R".as_ref(), target.as_os_str()]);
+            }
+        }
+
+        #[unsafe(method(openWebsite:))]
+        fn open_website(&self, _sender: Option<&AnyObject>) {
+            open(&[WEBSITE.as_ref()]);
+        }
+
         #[unsafe(method(pasteToDevice:))]
         fn paste_to_device(&self, _sender: Option<&AnyObject>) {
             self.sync_clipboard_to_device(true);
@@ -322,6 +336,23 @@ impl AppDelegate {
             Some(self),
         ));
         add_submenu(mtm, &bar, "Device", &device);
+
+        let help = NSMenu::new(mtm);
+        help.addItem(&item(
+            mtm,
+            "Show Log File",
+            Some(sel!(showLog:)),
+            "",
+            Some(self),
+        ));
+        help.addItem(&item(
+            mtm,
+            "DroidMirror on GitHub",
+            Some(sel!(openWebsite:)),
+            "",
+            Some(self),
+        ));
+        add_submenu(mtm, &bar, "Help", &help);
 
         bar
     }
@@ -511,6 +542,20 @@ impl AppDelegate {
         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
         window.setFrame_display_animate(frame, true, !first);
         window.invalidateShadow();
+    }
+}
+
+const WEBSITE: &str = "https://github.com/codrixotech/DroidMirror";
+
+/// Runs `/usr/bin/open` with these arguments (Finder / browser).
+fn open(args: &[&std::ffi::OsStr]) {
+    match std::process::Command::new("/usr/bin/open")
+        .args(args)
+        .spawn()
+    {
+        // Reap it in the background so it doesn't linger as a zombie.
+        Ok(mut child) => drop(std::thread::spawn(move || child.wait())),
+        Err(e) => log::warn!("could not run open: {e}"),
     }
 }
 

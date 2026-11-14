@@ -1,0 +1,16 @@
+DroidMirror
+Copyright 2026 Codrixo and DroidMirror contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The macOS app embeds scrcpy-server (https://github.com/Genymobile/scrcpy),
+which it runs on the user's Android device:
+
+    Copyright (C) 2018 Genymobile
+    Copyright (C) 2018-2026 Romain Vimont
+
+    Licensed under the Apache License, Version 2.0.
+
+DroidMirror is not affiliated with or endorsed by Genymobile, Google or
+Apple. Android is a trademark of Google LLC. Mac and iPhone are trademarks
+of Apple Inc.

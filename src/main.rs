@@ -88,6 +88,8 @@ fn parse_args() -> Result<Option<Args>> {
                 println!("{USAGE}");
                 return Ok(None);
             }
+            // Finder used to pass a process serial number to apps.
+            a if a.starts_with("-psn_") => {}
             other => bail!("unknown argument `{other}` (try --help)"),
         }
     }

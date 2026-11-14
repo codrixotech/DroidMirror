@@ -1,0 +1,25 @@
+DroidMirror shows your phone's screen on your Mac and lets you use it from there: click to tap, drag to swipe, scroll, and type with your Mac's keyboard. Incoming calls appear on your Mac, where you can answer or decline them.
+
+This is the companion app for DroidMirror for Mac (free and open source). It's for phones where you'd rather not turn on Developer options.
+
+HOW IT WORKS
+1. Install DroidMirror on your Mac (github.com/codrixotech/DroidMirror).
+2. In this app, allow control, then tap Start sharing.
+3. Open DroidMirror on your Mac. Check that both show the same 6-digit code, and tap Allow.
+
+After pairing, your Mac connects automatically whenever you start sharing.
+
+PRIVATE BY DESIGN
+• Your screen and input go only to your own paired Mac, over your local Wi-Fi network, encrypted.
+• No accounts, no ads, no analytics, no servers. We never receive your data.
+• Each Mac must be approved on the phone with a matching code.
+
+PERMISSIONS
+• Accessibility service: to perform the taps, swipes and typing you send from your Mac. DroidMirror reads only the text field you type into from the Mac.
+• Screen sharing: Android asks each time you start sharing.
+• Phone: to show incoming calls on your Mac and answer or end them from there.
+• Notifications: for pairing requests.
+
+Requires Android 12 or later and a Mac with Apple Silicon running macOS 14 or later, on the same Wi-Fi network.
+
+DroidMirror is open source under the Apache License 2.0.
