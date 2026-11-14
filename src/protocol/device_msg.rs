@@ -8,6 +8,8 @@ const TYPE_ACK_CLIPBOARD: u8 = 1;
 const TYPE_UHID_OUTPUT: u8 = 2;
 /// Companion-app extension (not used by scrcpy-server): call state.
 const TYPE_CALL_STATE: u8 = 100;
+/// Companion-app extension: input can't be performed (Accessibility off).
+const TYPE_CONTROL_UNAVAILABLE: u8 = 101;
 
 /// `DeviceMessageWriter.CLIPBOARD_TEXT_MAX_LENGTH`.
 const CLIPBOARD_TEXT_MAX_LEN: usize = (1 << 18) - 5;
@@ -25,6 +27,9 @@ pub enum DeviceMsg {
         state: u8,
         number: String,
     },
+    /// Companion app only: the phone can't perform input because its
+    /// Accessibility service isn't running.
+    ControlUnavailable,
 }
 
 /// Reads one message; `Ok(None)` on a clean end of stream.
@@ -73,6 +78,7 @@ pub fn read(r: &mut impl Read) -> io::Result<Option<DeviceMsg>> {
                 number: String::from_utf8_lossy(&buf).into_owned(),
             }))
         }
+        TYPE_CONTROL_UNAVAILABLE => Ok(Some(DeviceMsg::ControlUnavailable)),
         other => Err(invalid(format!("unknown device message type {other}"))),
     }
 }
@@ -121,6 +127,14 @@ mod tests {
                 state: 1,
                 number: "123".into()
             })
+        );
+    }
+
+    #[test]
+    fn parses_companion_control_unavailable() {
+        assert_eq!(
+            read(&mut &[101u8][..]).unwrap(),
+            Some(DeviceMsg::ControlUnavailable)
         );
     }
 

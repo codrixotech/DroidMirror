@@ -43,6 +43,8 @@ final class Protocol {
 
     /** Device message type for call state (an extension; scrcpy uses 0-2). */
     static final int MSG_CALL_STATE = 100;
+    /** Input can't be performed: the Accessibility service isn't running. */
+    static final int MSG_CONTROL_UNAVAILABLE = 101;
 
     /** Code both devices show while pairing: SHA-256(fingerprint || nonce), 6 digits. */
     static int pairingCode(byte[] fingerprint, byte[] nonce) {
@@ -102,6 +104,10 @@ final class Protocol {
         byte[] n = number == null ? new byte[0] : number.getBytes(StandardCharsets.UTF_8);
         return ByteBuffer.allocate(6 + n.length).put((byte) MSG_CALL_STATE).put((byte) state)
                 .putInt(n.length).put(n).array();
+    }
+
+    static byte[] controlUnavailableMessage() {
+        return new byte[] {(byte) MSG_CONTROL_UNAVAILABLE};
     }
 
     /** Scales the screen so its long side is at most {@code max}, multiples of 8. */

@@ -10,6 +10,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.util.DisplayMetrics;
+import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
@@ -21,6 +22,7 @@ import android.view.accessibility.AccessibilityNodeInfo;
  * reads no screen content except the focused text field when typing into it.
  */
 public final class ControlService extends AccessibilityService {
+    private static final String TAG = "DroidMirror";
     private static volatile ControlService instance;
 
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -43,6 +45,7 @@ public final class ControlService extends AccessibilityService {
     @Override
     protected void onServiceConnected() {
         instance = this;
+        Log.i(TAG, "Accessibility service connected: input from the Mac is enabled");
     }
 
     @Override
@@ -147,7 +150,15 @@ public final class ControlService extends AccessibilityService {
         GestureDescription g = new GestureDescription.Builder()
                 .addStroke(new GestureDescription.StrokeDescription(path, 0, durationMs))
                 .build();
-        dispatchGesture(g, null, null);
+        boolean accepted = dispatchGesture(g, new GestureResultCallback() {
+            @Override
+            public void onCancelled(GestureDescription gesture) {
+                Log.w(TAG, "gesture cancelled by the system");
+            }
+        }, null);
+        if (!accepted) {
+            Log.w(TAG, "gesture rejected (is the Accessibility service allowed to perform gestures?)");
+        }
     }
 
     private void scroll(ControlMessage m) {
@@ -190,14 +201,14 @@ public final class ControlService extends AccessibilityService {
         boolean ctrl = (meta & META_CTRL_ON) != 0;
         switch (keycode) {
             case 3: // HOME
-                performGlobalAction(GLOBAL_ACTION_HOME);
+                global(GLOBAL_ACTION_HOME);
                 return;
             case 4: // BACK
             case 111: // ESCAPE
-                performGlobalAction(GLOBAL_ACTION_BACK);
+                global(GLOBAL_ACTION_BACK);
                 return;
             case 187: // APP_SWITCH
-                performGlobalAction(GLOBAL_ACTION_RECENTS);
+                global(GLOBAL_ACTION_RECENTS);
                 return;
             case 66: // ENTER
             case 160: // NUMPAD_ENTER
@@ -245,6 +256,12 @@ public final class ControlService extends AccessibilityService {
                 default:
                     break;
             }
+        }
+    }
+
+    private void global(int action) {
+        if (!performGlobalAction(action)) {
+            Log.w(TAG, "global action " + action + " refused");
         }
     }
 

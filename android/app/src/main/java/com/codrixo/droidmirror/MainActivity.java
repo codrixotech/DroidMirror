@@ -111,12 +111,22 @@ public final class MainActivity extends Activity implements MirrorService.Listen
     }
 
     private void refresh() {
+        boolean controlRunning = ControlService.get() != null;
         boolean control = isControlEnabled();
-        controlStatus.setText(control
-                ? "✓ On. Your Mac can tap, swipe and type on this phone."
-                : "Needed so your Mac can tap, swipe and type. Turn on \"DroidMirror\" under "
-                        + "Settings → Accessibility → Installed apps (or Downloaded apps).");
-        controlButton.setVisibility(control ? View.GONE : View.VISIBLE);
+        if (controlRunning) {
+            controlStatus.setText("✓ On. Your Mac can tap, swipe and type on this phone.");
+        } else if (control) {
+            // Switched on in Settings, but Android isn't running it (often after the
+            // app was updated, or battery optimisation stopped it).
+            controlStatus.setText("Switched on, but Android isn't running it. In Settings → "
+                    + "Accessibility, turn \"DroidMirror remote control\" off and on again.");
+        } else {
+            controlStatus.setText("Needed so your Mac can tap, swipe and type. Turn on \"DroidMirror "
+                    + "remote control\" under Settings → Accessibility (on realme: Settings → "
+                    + "Additional settings → Accessibility → Downloaded apps).");
+        }
+        controlButton.setText(control ? "Open Accessibility settings" : "Turn on in Settings");
+        controlButton.setVisibility(controlRunning ? View.GONE : View.VISIBLE);
 
         List<String> missing = missingPermissions();
         permissionStatus.setText(missing.isEmpty()
@@ -140,9 +150,6 @@ public final class MainActivity extends Activity implements MirrorService.Listen
     }
 
     private boolean isControlEnabled() {
-        if (ControlService.get() != null) {
-            return true;
-        }
         String enabled = Settings.Secure.getString(getContentResolver(),
                 Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
         String me = new ComponentName(this, ControlService.class).flattenToString();

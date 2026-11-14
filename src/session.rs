@@ -664,6 +664,14 @@ fn device_message_handler(ui: Arc<dyn Ui>) -> impl Fn(DeviceMsg) + Send + 'stati
                 _ => CallState::Idle,
             }));
         }
+        DeviceMsg::ControlUnavailable => {
+            log::warn!("the phone can't perform input: its Accessibility service isn't running");
+            ui.post(UiEvent::Notice(
+                "The phone can't be controlled yet. On the phone, open DroidMirror and follow \
+                 \"Allow control\" (Settings → Accessibility → DroidMirror remote control)."
+                    .into(),
+            ));
+        }
         other => log::debug!("device message: {other:?}"),
     }
 }

@@ -83,8 +83,11 @@ Each connection starts, after the TLS handshake, with a hello from the Mac:
 status: 0 ok, 1 denied, 2 unknown token, 3 not sharing
 ```
 
-Device messages are scrcpy's, plus type 100, call state:
-`100 | state u8 (0 idle, 1 ringing, 2 in call) | len u32 | number`.
+Device messages are scrcpy's, plus two extensions:
+
+- `100 | state u8 (0 idle, 1 ringing, 2 in call) | len u32 | number`: call state.
+- `101`: input can't be performed (the Accessibility service isn't
+  running); the Mac tells the user how to turn it on.
 
 On the phone, video comes from MediaProjection and MediaCodec (H.264,
 1024 px max, 3 Mbit/s, 30 fps). Input goes through an Accessibility

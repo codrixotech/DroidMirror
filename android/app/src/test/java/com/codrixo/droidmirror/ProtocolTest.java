@@ -57,6 +57,12 @@ public class ProtocolTest {
     }
 
     @Test
+    public void controlUnavailableMatchesTheMacParser() {
+        // Same byte as parses_companion_control_unavailable() in the Mac app.
+        assertArrayEquals(new byte[] {101}, Protocol.controlUnavailableMessage());
+    }
+
+    @Test
     public void deviceName() {
         byte[] f = Protocol.deviceNameField("RMX3771");
         assertEquals(64, f.length);

@@ -437,8 +437,13 @@ public final class MirrorService extends Service {
     }
 
     private void handleControl(DataInputStream in) throws IOException {
+        long lastWarning = 0;
+        int received = 0;
         while (true) {
             ControlMessage m = ControlMessage.read(in);
+            if (received++ == 0) {
+                Log.i(TAG, "control channel: receiving input from the Mac");
+            }
             if (m.type == ControlMessage.TYPE_RESET_VIDEO) {
                 ScreenEncoder e = encoder;
                 if (e != null) {
@@ -452,8 +457,13 @@ public final class MirrorService extends Service {
                 ControlService c = ControlService.get();
                 if (c != null) {
                     c.handle(m);
-                } else if (m.type == ControlMessage.TYPE_INJECT_TOUCH) {
-                    Log.w(TAG, "input ignored: the DroidMirror Accessibility service is off");
+                } else {
+                    long now = android.os.SystemClock.uptimeMillis();
+                    if (now - lastWarning > 5000) {
+                        lastWarning = now;
+                        Log.w(TAG, "input ignored: the DroidMirror Accessibility service isn't running");
+                        sendEvent(Protocol.controlUnavailableMessage());
+                    }
                 }
             }
         }
